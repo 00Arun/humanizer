@@ -84,3 +84,20 @@ fn docx_round_trip_keeps_structure_and_replaces_text() {
     assert_eq!(again.paragraphs[2].text, paras[2]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+const ESSAY: &str = "Mountains are one of the most beautiful gifts of nature. They are very tall and covered with green forests, rocks, and snow. Mountains provide fresh air, clean water, and shelter to many animals and birds. They are also important sources of rivers. Many people visit mountains to enjoy their beauty and peaceful environment. Nepal is a beautiful country with many high mountains, including Mount Everest, the highest mountain in the world. Mountains also attract climbers and tourists from different countries. We should protect mountains by keeping them clean and planting trees. Mountains make our planet beautiful and wonderful.";
+
+#[test]
+fn offline_humanizer_changes_plain_essay_too() {
+    let opts = LocalOptions { contractions: true, restructure: true };
+    let out = humanize(ESSAY, &opts);
+    println!("essay rewrite:\n{out}");
+    assert_ne!(out, ESSAY, "offline engine must change something even without machine idioms");
+    let before = detect_local(ESSAY).overall;
+    let after = detect_local(&out).overall;
+    println!("essay score {before} -> {after}");
+    assert!(after < before, "score should drop: {before} -> {after}");
+    let wc = |s: &str| crate::text::word_count(s) as f64;
+    assert!((wc(&out) - wc(ESSAY)).abs() / wc(ESSAY) < 0.2, "length must stay within 20%");
+    assert!(out.contains("Everest") && out.contains("Nepal"));
+}

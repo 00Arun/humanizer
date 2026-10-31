@@ -93,12 +93,11 @@ pub async fn humanize_paragraphs(
         let lo = local::LocalOptions { contractions, restructure: opts.intensity != "light" };
         let out: Vec<String> = paragraphs.iter().map(|p| local::humanize(p, &lo)).collect();
         progress(1, 1, "Done");
-        return HumanizeOutcome {
-            paragraphs: out,
-            engine: "local-rules".into(),
-            passes: 1,
-            warnings: vec!["No Anthropic API key configured: used the offline rule engine only. Add a key in Settings for the full Fable rewrite.".into()],
-        };
+        let mut warnings = vec!["No Anthropic API key configured: used the offline rule engine only. Add a key in Settings for the full Fable rewrite.".into()];
+        if out == paragraphs {
+            warnings.push("The offline engine found nothing it could safely change in this text. Try Balanced/Strong intensity, or add an API key so the model can rewrite it.".into());
+        }
+        return HumanizeOutcome { paragraphs: out, engine: "local-rules".into(), passes: 1, warnings };
     };
 
     let mut warnings = Vec::new();

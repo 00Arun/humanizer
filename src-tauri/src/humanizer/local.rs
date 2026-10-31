@@ -90,13 +90,113 @@ pub fn humanize(paragraph: &str, opts: &LocalOptions) -> String {
     }
     let mut out = swap_idioms(paragraph);
     out = soften_dashes(&out);
+    out = loosen_generic(&out);
     if opts.contractions {
         out = contract(&out);
     }
     if opts.restructure {
         out = vary_rhythm(&out);
+        out = pronoun_openers(&out);
     }
     tidy(&out)
+}
+
+/// Generic "school essay" phrasing that reads flat. Applied to every other
+/// occurrence so the text loosens up without becoming monotone the other way.
+const GENERIC: &[(&str, &str)] = &[
+    (r"\bvery (tall|big|small|good|bad|important|beautiful|large|high|old|long|useful|helpful|popular|famous|nice|happy|interesting)\b", "$1"),
+    (r"\bone of the most\b", "among the most"),
+    (r"\bmany (people|students|animals|countries|tourists|things|ways|years|places)\b", "a lot of $1"),
+    (r"\bprovides?\b", "gives"),
+    (r"\bimportant\b", "major"),
+    (r"\bbeautiful\b", "lovely"),
+    (r"\bfrom different countries\b", "from all over the world"),
+    (r"\bwe should\b", "we need to"),
+    (r"\bthey are also\b", "they're also"),
+    (r"\bin addition to\b", "besides"),
+    (r"\bis also\b", "is"),
+    (r"\bare also\b", "are"),
+    (r"\bas well as\b", "and"),
+    (r"\ba large number of\b", "plenty of"),
+    (r"\bin order to\b", "to"),
+    (r"\bplays? an? important role\b", "matters"),
+    (r"\bit is (?:well )?known that\b", ""),
+    (r"\bthere are many\b", "there are plenty of"),
+    (r"\battracts?\b", "draws"),
+    (r"\benjoy\b", "take in"),
+    // alternate Oxford-comma lists: "x, y, and z" -> "x, y and z"
+    (r"(\w+), (\w+), and (\w+)", "$1, $2 and $3"),
+];
+
+static GENERIC_RES: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
+    GENERIC.iter().map(|(p, r)| (Regex::new(&format!("(?i){p}")).unwrap(), *r)).collect()
+});
+
+fn loosen_generic(s: &str) -> String {
+    let mut out = s.to_string();
+    for (re, rep) in GENERIC_RES.iter() {
+        let mut n = 0usize;
+        out = re
+            .replace_all(&out, |caps: &regex::Captures| {
+                n += 1;
+                if n % 2 == 1 {
+                    let mut dst = String::new();
+                    caps.expand(rep, &mut dst);
+                    // "gives" after a plural subject stays plural: "Mountains gives" -> "give".
+                    dst
+                } else {
+                    caps[0].to_string()
+                }
+            })
+            .to_string();
+    }
+    fix_plural_verbs(&out)
+}
+
+/// Repairs the one agreement case the generic swaps can introduce:
+/// "<plural noun> gives/draws" -> "give/draw".
+fn fix_plural_verbs(s: &str) -> String {
+    static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b([A-Za-z]+s|They|they|People|people)( also| often| usually| still| even)? (gives|draws)\b").unwrap());
+    RE.replace_all(s, |caps: &regex::Captures| {
+        let subj = &caps[1];
+        let adv = caps.get(2).map_or("", |m| m.as_str());
+        // "This gives" / "It gives" style singulars end without an s, so they never match.
+        let verb = match &caps[3] {
+            "gives" => "give",
+            _ => "draw",
+        };
+        format!("{subj}{adv} {verb}")
+    })
+    .to_string()
+}
+
+/// When consecutive sentences open with the same noun ("Mountains are…
+/// Mountains provide…"), the second one gets a pronoun instead.
+fn pronoun_openers(p: &str) -> String {
+    let sents = text::sentences(p);
+    if sents.len() < 3 {
+        return p.to_string();
+    }
+    let mut out: Vec<String> = Vec::with_capacity(sents.len());
+    let mut prev_opener: Option<String> = None;
+    let mut swapped_last = false;
+    for s in &sents {
+        let opener = s.split_whitespace().next().unwrap_or("").trim_matches(|c: char| !c.is_alphanumeric()).to_string();
+        let eligible = opener.len() >= 4
+            && opener.chars().next().map_or(false, |c| c.is_uppercase())
+            && !matches!(opener.as_str(), "The" | "This" | "That" | "These" | "Those" | "There" | "They" | "When" | "What" | "Many" | "Some" | "Most" | "Nepal");
+        let same_as_prev = prev_opener.as_deref() == Some(opener.as_str());
+        if eligible && same_as_prev && !swapped_last {
+            let pronoun = if opener.ends_with('s') { "They" } else { "It" };
+            out.push(format!("{pronoun}{}", &s[opener.len()..]));
+            swapped_last = true;
+        } else {
+            out.push(s.clone());
+            swapped_last = false;
+        }
+        prev_opener = Some(opener);
+    }
+    out.join(" ")
 }
 
 /// Light pass after a model rewrite: strips preambles, fixes spacing, and
@@ -250,7 +350,7 @@ fn vary_rhythm(p: &str) -> String {
         let s = &sents[i];
         let n = text::word_count(s);
         // Split long sentences, and every other medium one, so lengths spread out.
-        if n >= 30 || (n >= 18 && i % 2 == 1) {
+        if n >= 30 || (n >= 15 && i % 2 == 1) {
             if let Some((a, b)) = split_long(s) {
                 out.push(a);
                 out.push(b);
@@ -258,15 +358,20 @@ fn vary_rhythm(p: &str) -> String {
                 continue;
             }
         }
-        if n <= 7 && i + 1 < sents.len() && text::word_count(&sents[i + 1]) <= 9 && out.len() % 2 == 0 {
+        // Merge a pair of short sentences (every other opportunity).
+        if n <= 9 && i + 1 < sents.len() && text::word_count(&sents[i + 1]) <= 11 && out.len() % 2 == 0 {
             let first = s.trim_end_matches(['.', '!', '?']).to_string();
             let mut second = sents[i + 1].clone();
+            // Lower-case the second opener unless it is a proper noun / "I".
             if let Some(c) = second.chars().next() {
-                if c.is_uppercase() && !second.starts_with('I') {
+                let word = second.split_whitespace().next().unwrap_or("");
+                let keep = word == "I" || word.starts_with("I'") || text::zipf(&word.to_lowercase()) < 3.0;
+                if c.is_uppercase() && !keep {
                     second = c.to_lowercase().collect::<String>() + &second[c.len_utf8()..];
                 }
             }
-            out.push(format!("{first}, and {second}"));
+            let joiner = if out.len() % 4 == 0 { ", and " } else { "; " };
+            out.push(format!("{first}{joiner}{second}"));
             i += 2;
             continue;
         }
