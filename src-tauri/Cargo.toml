@@ -1,6 +1,6 @@
 [package]
 name = "humanizer"
-version = "0.1.0"
+version = "0.2.0"
 description = "Humanizer - rewrite AI-assisted text so it reads naturally, with a built-in AI-detection suite"
 authors = ["Arun Pandey (Arun AI Studio)"]
 edition = "2021"

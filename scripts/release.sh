@@ -24,9 +24,7 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 echo "==> Setting version $VERSION"
-sed -i '' "s/\"version\": \"[0-9.]*\"/\"version\": \"$VERSION\"/" package.json src-tauri/tauri.conf.json
-sed -i '' "0,/^version = \"[0-9.]*\"/s//version = \"$VERSION\"/" src-tauri/Cargo.toml
-(cd src-tauri && cargo generate-lockfile --offline >/dev/null 2>&1 || cargo update -p humanizer --offline >/dev/null 2>&1 || true)
+./scripts/bump-version.sh "$VERSION"
 
 echo "==> Building macOS installer"
 # Remove the previous DMG first so a failed build can never ship a stale file.
