@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Humanizer</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <img src="/icon-128.png" alt="" class="brand-icon" id="brand-icon" />
+          <div>
+            <div class="brand-name">Humanizer</div>
+            <div class="brand-sub">Arun AI Studio</div>
+          </div>
+        </div>
+        <nav class="nav">
+          <button class="nav-item active" data-view="humanize">
+            <span class="nav-ico">✎</span> Humanize
+          </button>
+          <button class="nav-item" data-view="documents">
+            <span class="nav-ico">▤</span> Documents
+          </button>
+          <button class="nav-item" data-view="settings">
+            <span class="nav-ico">⚙</span> Settings
+          </button>
+          <button class="nav-item" data-view="about">
+            <span class="nav-ico">ⓘ</span> About
+          </button>
+        </nav>
+        <div class="sidebar-foot">
+          <div class="engine-pill" id="engine-pill">Engine: …</div>
+          <div class="version" id="sidebar-version">v—</div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <!-- ============ HUMANIZE ============ -->
+        <section class="view active" id="view-humanize">
+          <header class="view-head">
+            <div>
+              <h1>Humanize text</h1>
+              <p class="muted">Paste text, pick a register, and rewrite it so it reads like a person wrote it. Then check it against the detector suite.</p>
+            </div>
+            <div class="controls">
+              <label>Style
+                <select id="style">
+                  <option value="natural">Natural (match input)</option>
+                  <option value="academic">Academic</option>
+                  <option value="professional">Professional</option>
+                  <option value="casual">Casual</option>
+                  <option value="creative">Creative</option>
+                </select>
+              </label>
+              <label>Intensity
+                <select id="intensity">
+                  <option value="light">Light</option>
+                  <option value="balanced">Balanced</option>
+                  <option value="strong">Strong (2-pass)</option>
+                </select>
+              </label>
+            </div>
+          </header>
+
+          <div class="panes">
+            <div class="pane">
+              <div class="pane-bar">
+                <span class="pane-title">Original</span>
+                <span class="spacer"></span>
+                <span class="count" id="in-count">0 words</span>
+                <button class="btn ghost sm" id="btn-import">Import file…</button>
+                <button class="btn ghost sm" id="btn-paste">Paste</button>
+                <button class="btn ghost sm" id="btn-clear">Clear</button>
+                <button class="btn ghost sm" id="btn-check-in">Check original</button>
+              </div>
+              <textarea id="input" placeholder="Paste or type the text you want to humanize…" spellcheck="false"></textarea>
+            </div>
+            <div class="pane">
+              <div class="pane-bar">
+                <span class="pane-title">Humanized</span>
+                <span class="spacer"></span>
+                <span class="count" id="out-count">0 words</span>
+                <button class="btn ghost sm" id="btn-copy" disabled>Copy</button>
+                <button class="btn ghost sm" id="btn-save-text" disabled>Save as…</button>
+                <button class="btn ghost sm" id="btn-check-out" disabled>Check result</button>
+              </div>
+              <textarea id="output" placeholder="The rewritten text appears here." spellcheck="false"></textarea>
+            </div>
+          </div>
+
+          <div class="action-row">
+            <button class="btn primary lg" id="btn-humanize">Humanize</button>
+            <div class="progress" id="text-progress" hidden>
+              <div class="bar"><div class="fill" id="text-progress-fill"></div></div>
+              <span id="text-progress-label">Working…</span>
+            </div>
+            <div class="score-compare" id="score-compare" hidden>
+              <span>Machine-likeness</span>
+              <span class="chip" id="chip-before">—</span>
+              <span class="arrow">→</span>
+              <span class="chip" id="chip-after">—</span>
+            </div>
+          </div>
+
+          <div class="warnings" id="warnings" hidden></div>
+
+          <div class="detect" id="detect-panel" hidden>
+            <div class="detect-head">
+              <div class="gauge" id="gauge"><div class="gauge-inner"><span id="gauge-val">—</span><small>/100</small></div></div>
+              <div class="detect-summary">
+                <div class="detect-title" id="detect-title">—</div>
+                <div class="detect-verdict" id="detect-verdict">—</div>
+                <div class="muted" id="detect-meta"></div>
+                <div class="muted" id="detect-note"></div>
+                <label class="toggle-inline"><input type="checkbox" id="use-judge" checked /> Include AI Judge (model-based)</label>
+              </div>
+            </div>
+            <div class="engines" id="engines"></div>
+            <div class="highlight-wrap" id="highlight-wrap" hidden>
+              <div class="pane-bar"><span class="pane-title">Flagged sentences in context</span></div>
+              <div class="highlight" id="highlight"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ DOCUMENTS ============ -->
+        <section class="view" id="view-documents">
+          <header class="view-head">
+            <div>
+              <h1>Humanize documents</h1>
+              <p class="muted">Word (.docx), PDF, Markdown and text files. Word documents keep their styles, headings, lists, tables and images; only the prose changes.</p>
+            </div>
+            <div class="controls">
+              <label>Style
+                <select id="doc-style">
+                  <option value="natural">Natural (match input)</option>
+                  <option value="academic">Academic</option>
+                  <option value="professional">Professional</option>
+                  <option value="casual">Casual</option>
+                  <option value="creative">Creative</option>
+                </select>
+              </label>
+              <label>Intensity
+                <select id="doc-intensity">
+                  <option value="light">Light</option>
+                  <option value="balanced">Balanced</option>
+                  <option value="strong">Strong (2-pass)</option>
+                </select>
+              </label>
+            </div>
+          </header>
+
+          <div class="dropzone" id="dropzone">
+            <div class="drop-ico">⇩</div>
+            <div><strong>Drop files here</strong> or <button class="link" id="btn-choose">choose files</button></div>
+            <div class="muted">.docx · .pdf · .md · .txt</div>
+          </div>
+
+          <div class="doc-list" id="doc-list"></div>
+
+          <div class="action-row">
+            <button class="btn primary lg" id="btn-humanize-docs" disabled>Humanize all</button>
+            <button class="btn ghost" id="btn-clear-docs" disabled>Clear list</button>
+            <span class="muted">Each file is saved next to the original as <code>name.humanized.ext</code> (you'll be asked where).</span>
+          </div>
+        </section>
+
+        <!-- ============ SETTINGS ============ -->
+        <section class="view" id="view-settings">
+          <header class="view-head">
+            <div>
+              <h1>Settings</h1>
+              <p class="muted">The rewrite engine and the AI Judge run on your own Anthropic API key. The five statistical detectors and the offline rule engine need no key.</p>
+            </div>
+          </header>
+
+          <div class="card">
+            <h2>Rewrite engine</h2>
+            <div class="field">
+              <label for="api-key">Anthropic API key</label>
+              <div class="row">
+                <input id="api-key" type="password" placeholder="sk-ant-…" autocomplete="off" spellcheck="false" />
+                <button class="btn ghost" id="btn-show-key" type="button">Show</button>
+                <button class="btn ghost" id="btn-test" type="button">Test connection</button>
+              </div>
+              <div class="hint">Stored only on this computer, in the app's config folder. Get a key at console.anthropic.com.</div>
+              <div class="hint" id="test-result"></div>
+            </div>
+            <div class="field-grid">
+              <div class="field">
+                <label for="model">Model</label>
+                <select id="model">
+                  <option value="claude-fable-5-1">Claude Fable 5.1 (best quality, default)</option>
+                  <option value="claude-opus-5-5">Claude Opus 5.5</option>
+                  <option value="claude-sonnet-5-5">Claude Sonnet 5.5 (fastest)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="effort">Reasoning effort</label>
+                <select id="effort">
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High (default)</option>
+                  <option value="xhigh">Extra high</option>
+                  <option value="max">Max</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Detection</h2>
+            <label class="toggle"><input type="checkbox" id="ai-judge" /> <span>Enable the AI Judge engine (uses the API; adds a model-based opinion to the five statistical detectors)</span></label>
+          </div>
+
+          <div class="card">
+            <h2>Updates</h2>
+            <label class="toggle"><input type="checkbox" id="auto-update" /> <span>Check for updates on launch and install them automatically</span></label>
+            <div class="row" style="margin-top:10px">
+              <button class="btn ghost" id="btn-check-update">Check now</button>
+              <span class="hint" id="update-status"></span>
+            </div>
+          </div>
+
+          <div class="action-row">
+            <button class="btn primary" id="btn-save-settings">Save settings</button>
+            <span class="hint" id="settings-saved"></span>
+          </div>
+        </section>
+
+        <!-- ============ ABOUT ============ -->
+        <section class="view" id="view-about">
+          <div class="about">
+            <img src="/icon-256.png" alt="" class="about-icon" id="about-icon" />
+            <h1>Humanizer <span class="muted" id="about-version">v—</span></h1>
+            <p class="lead">Rewrites AI-assisted or over-polished text so it reads like a person wrote it, and checks the result with a built-in suite of AI-text detectors.</p>
+            <div class="dev-card">
+              <div class="dev-row"><span class="dev-k">Developer</span><span class="dev-v">Arun Pandey</span></div>
+              <div class="dev-row"><span class="dev-k">Company</span><span class="dev-v">Arun AI Studio</span></div>
+              <div class="dev-row"><span class="dev-k">Website</span><span class="dev-v"><a href="#" id="link-website">https://arun-pandey.com.np/</a></span></div>
+              <div class="dev-row"><span class="dev-k">Platform</span><span class="dev-v" id="about-platform">—</span></div>
+            </div>
+            <div class="row" style="justify-content:center; gap:10px">
+              <button class="btn ghost" id="btn-about-update">Check for updates</button>
+              <span class="hint" id="about-update-status"></span>
+            </div>
+            <p class="muted small">Detection engines: Rhythm &amp; Burstiness, Lexical Predictability, Stylometric Fingerprint, Machine Idioms, Structural Templates, and the model-based AI Judge. Word-frequency table derived from the OpenSubtitles 2018 list (CC-BY-SA 4.0). Built with Rust and Tauri.</p>
+            <p class="muted small">© 2026 Arun Pandey · Arun AI Studio</p>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="toasts" id="toasts"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

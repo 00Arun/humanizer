@@ -1,0 +1,76 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Humanizer",
+  "version": "0.1.0",
+  "identifier": "com.arunaistudio.humanizer",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Humanizer",
+        "width": 1240,
+        "height": 820,
+        "minWidth": 960,
+        "minHeight": 640,
+        "center": true,
+        "dragDropEnabled": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg", "nsis"],
+    "createUpdaterArtifacts": true,
+    "publisher": "Arun AI Studio",
+    "copyright": "© 2026 Arun Pandey, Arun AI Studio",
+    "category": "Productivity",
+    "shortDescription": "Make AI-assisted writing read naturally",
+    "longDescription": "Humanizer rewrites AI-assisted or over-polished text so it reads like a person wrote it, and checks the result against a built-in suite of AI-text detectors. Works on pasted text and on Word, PDF, Markdown and text files. Developed by Arun Pandey, Arun AI Studio.",
+    "homepage": "https://arun-pandey.com.np/",
+    "licenseFile": "../LICENSE",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "dmg": {
+        "background": "installer/dmg-background.png",
+        "windowSize": { "width": 660, "height": 400 },
+        "appPosition": { "x": 180, "y": 220 },
+        "applicationFolderPosition": { "x": 480, "y": 220 }
+      }
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["English"],
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "headerImage": "installer/nsis-header.bmp",
+        "sidebarImage": "installer/nsis-sidebar.bmp",
+        "startMenuFolder": "Arun AI Studio"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY1N0EwNkEyMTY5RThBRjEKUldUeGlwNFdvZ1o2WlFLUFdOSkNUN3YyWlBSZ2ZaQ2ZzS3U3blVrWlJHWFMrRUdzbG1pM0hzZm8K",
+      "endpoints": [
+        "https://github.com/Arunpandey2/humanizer/releases/latest/download/latest.json"
+      ],
+      "windows": { "installMode": "passive" }
+    }
+  }
+}
