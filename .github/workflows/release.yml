@@ -19,10 +19,14 @@ jobs:
           - platform: windows-latest
             args: ""
             bundle: nsis
+            optional: false
           - platform: macos-latest
             args: --target x86_64-apple-darwin
             bundle: dmg
+            optional: true
     runs-on: ${{ matrix.platform }}
+    # The Intel-Mac cross build of llama.cpp is best-effort.
+    continue-on-error: ${{ matrix.optional == true }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -35,6 +39,8 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      # llama.cpp is compiled from source; cmake ships on the hosted runners.
+      - run: cmake --version
       - run: npm ci
       - run: npm run tauri build -- ${{ matrix.args }} --bundles ${{ matrix.bundle }}
       - uses: actions/upload-artifact@v4

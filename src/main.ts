@@ -14,7 +14,14 @@ interface Settings {
   default_style: string;
   default_intensity: string;
   ai_judge_enabled: boolean;
+  engine_mode: string;
+  local_model_path: string;
 }
+interface ModelStatus {
+  installed: boolean; path: string; name: string; size_bytes: number; loaded: boolean;
+  downloading: boolean; accelerator: string; default_label: string; default_size_bytes: number;
+}
+interface DownloadProgress { downloaded: number; total: number; done: boolean; error: string | null }
 interface Signal { label: string; value: string; note: string }
 interface Flagged { sentence: string; score: number; reason: string }
 interface EngineReport {
@@ -81,7 +88,10 @@ let settings: Settings = {
   default_style: "natural",
   default_intensity: "balanced",
   ai_judge_enabled: true,
+  engine_mode: "auto",
+  local_model_path: "",
 };
+let modelStatus: ModelStatus | null = null;
 
 async function loadSettings() {
   settings = await invoke<Settings>("get_settings");
@@ -89,6 +99,7 @@ async function loadSettings() {
   $<HTMLSelectElement>("model").value = settings.model;
   $<HTMLSelectElement>("effort").value = settings.effort;
   $<HTMLInputElement>("ai-judge").checked = settings.ai_judge_enabled;
+  $<HTMLSelectElement>("engine-mode").value = settings.engine_mode;
   $<HTMLSelectElement>("style").value = settings.default_style;
   $<HTMLSelectElement>("intensity").value = settings.default_intensity;
   $<HTMLSelectElement>("doc-style").value = settings.default_style;
@@ -97,11 +108,125 @@ async function loadSettings() {
   refreshEnginePill();
 }
 
+function activeEngineLabel(): string {
+  const hasKey = !!settings.anthropic_api_key;
+  const hasLocal = !!modelStatus?.installed;
+  switch (settings.engine_mode) {
+    case "api": return hasKey ? settings.model : "rules (no API key set)";
+    case "local": return hasLocal ? `Local AI · ${modelStatus!.name}` : "rules (model not installed)";
+    case "rules": return "rules only";
+    default:
+      if (hasKey) return settings.model;
+      if (hasLocal) return `Local AI · ${modelStatus!.name}`;
+      return "rules (no AI yet)";
+  }
+}
+
 function refreshEnginePill() {
   const pill = $("engine-pill");
-  pill.textContent = settings.anthropic_api_key ? `Engine: ${settings.model}` : "Engine: offline rules (no API key)";
-  pill.title = settings.anthropic_api_key ? "" : "Add an Anthropic API key in Settings for the full rewrite engine";
+  pill.textContent = `Engine: ${activeEngineLabel()}`;
+  pill.title = modelStatus?.installed || settings.anthropic_api_key ? "" : "Download the offline model or add an API key in Settings";
 }
+
+// ---------------------------------------------------------------------------
+// Offline model
+// ---------------------------------------------------------------------------
+const fmtGB = (b: number) => `${(b / 1e9).toFixed(2)} GB`;
+
+async function refreshModelStatus() {
+  try {
+    modelStatus = await invoke<ModelStatus>("local_model_status");
+  } catch (e) {
+    $("model-status").textContent = errMsg(e);
+    return;
+  }
+  const m = modelStatus;
+  const st = $("model-status");
+  if (m.installed) {
+    st.innerHTML = `<b style="color:var(--ok)">Installed</b> · ${esc(m.name)} · ${fmtGB(m.size_bytes)} · runs on ${esc(m.accelerator)}${m.loaded ? " · loaded" : ""}<br><span class="hint">${esc(m.path)}</span>`;
+  } else if (m.downloading) {
+    st.textContent = "Downloading…";
+  } else {
+    st.innerHTML = `<b>Not installed.</b> Default: ${esc(m.default_label)} · one-time download, resumable.`;
+  }
+  $("btn-model-download").hidden = m.installed || m.downloading;
+  $("btn-model-cancel").hidden = !m.downloading;
+  $("btn-model-test").hidden = !m.installed;
+  $("btn-model-delete").hidden = !m.installed;
+  $("btn-model-custom").hidden = m.downloading;
+  $("model-progress").hidden = !m.downloading;
+  refreshEnginePill();
+}
+
+$("btn-model-download").addEventListener("click", async () => {
+  try {
+    await invoke("download_local_model");
+    $("model-progress").hidden = false;
+    $("model-progress-fill").classList.add("indeterminate");
+    $("model-progress-label").textContent = "Starting download…";
+    await refreshModelStatus();
+  } catch (e) {
+    toast(errMsg(e), "err", 6000);
+  }
+});
+$("btn-model-cancel").addEventListener("click", () => invoke("cancel_model_download"));
+$("btn-model-delete").addEventListener("click", async () => {
+  if (!confirm("Remove the offline model file? You can download it again later.")) return;
+  try {
+    await invoke("delete_local_model");
+    toast("Offline model removed", "ok");
+  } catch (e) {
+    toast(errMsg(e), "err");
+  }
+  refreshModelStatus();
+});
+$("btn-model-custom").addEventListener("click", async () => {
+  const picked = await open({ multiple: false, filters: [{ name: "GGUF model", extensions: ["gguf"] }] });
+  if (!picked) return;
+  try {
+    modelStatus = await invoke<ModelStatus>("use_custom_model", { path: picked });
+    settings.local_model_path = picked as string;
+    toast(`Using ${modelStatus.name}`, "ok");
+  } catch (e) {
+    toast(errMsg(e), "err", 6000);
+  }
+  refreshModelStatus();
+});
+$("btn-model-test").addEventListener("click", async () => {
+  const out = $("model-test-result");
+  out.className = "hint";
+  out.textContent = "Loading model and generating a sample… (first load takes a few seconds)";
+  try {
+    out.textContent = await invoke<string>("test_local_model");
+    out.classList.add("ok");
+  } catch (e) {
+    out.textContent = errMsg(e);
+    out.classList.add("bad");
+  }
+  refreshModelStatus();
+});
+
+listen<DownloadProgress>("model-download", (ev) => {
+  const p = ev.payload;
+  const fill = $("model-progress-fill");
+  const label = $("model-progress-label");
+  if (p.done) {
+    if (p.error) {
+      toast(p.error, "err", 7000);
+    } else {
+      toast("Offline model installed. Humanizer can now rewrite without an API key.", "ok", 6000);
+    }
+    refreshModelStatus();
+    return;
+  }
+  $("model-progress").hidden = false;
+  $("btn-model-cancel").hidden = false;
+  $("btn-model-download").hidden = true;
+  fill.classList.remove("indeterminate");
+  const pct = p.total ? Math.round((p.downloaded / p.total) * 100) : 0;
+  fill.style.width = `${pct}%`;
+  label.textContent = p.total ? `${fmtGB(p.downloaded)} / ${fmtGB(p.total)} · ${pct}%` : fmtGB(p.downloaded);
+});
 
 $("btn-save-settings").addEventListener("click", async () => {
   const next: Settings = {
@@ -110,6 +235,7 @@ $("btn-save-settings").addEventListener("click", async () => {
     model: $<HTMLSelectElement>("model").value,
     effort: $<HTMLSelectElement>("effort").value,
     ai_judge_enabled: $<HTMLInputElement>("ai-judge").checked,
+    engine_mode: $<HTMLSelectElement>("engine-mode").value,
     default_style: $<HTMLSelectElement>("style").value,
     default_intensity: $<HTMLSelectElement>("intensity").value,
   };
@@ -524,4 +650,5 @@ for (const id of ["btn-downloads", "btn-about-downloads"]) {
   }
   updateCounts();
   renderDocs();
+  refreshModelStatus();
 })();

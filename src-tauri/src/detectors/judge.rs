@@ -66,6 +66,46 @@ fn parse(raw: &str) -> Result<JudgeJson, String> {
     serde_json::from_str(&trimmed[start..=end]).map_err(|e| e.to_string())
 }
 
+/// The same judgement from the offline model. Smaller models are unreliable
+/// at JSON, so this asks for a plain "Score: N" line plus short reasons.
+pub async fn judge_local(llm: std::sync::Arc<crate::humanizer::local_llm::LocalLlm>, text: String) -> EngineReport {
+    const SYSTEM: &str = "You are an AI-text detector. Read the text and estimate how likely it was written by an AI language model rather than a person. Consider: uniform sentence lengths, stock transitions (furthermore, moreover, in conclusion), generic polished vocabulary, three-item lists, wrap-up sentences, lack of specific detail or personal voice. Polished writing is not automatically AI. Answer in exactly this format and nothing else:\nScore: <number 0-100>\nReasons: <one or two short sentences>";
+    // Keep well inside the local context window.
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let sample = if words.len() > 900 { words[..900].join(" ") } else { text.clone() };
+    let name = llm.name.clone();
+    let res = tokio::task::spawn_blocking(move || llm.generate(SYSTEM, &sample, 160, 0.2, 7)).await;
+    match res {
+        Ok(Ok(raw)) => {
+            let lower = raw.to_lowercase();
+            let score = lower
+                .split("score")
+                .nth(1)
+                .and_then(|s| s.trim_start_matches(|c: char| !c.is_ascii_digit()).split(|c: char| !c.is_ascii_digit()).next().and_then(|n| n.parse::<f64>().ok()));
+            let Some(score) = score else {
+                return error_report(format!("Local judge gave no score: {}", raw.chars().take(80).collect::<String>()));
+            };
+            let reasons = raw
+                .splitn(2, |c: char| c == 'R' || c == 'r')
+                .nth(1)
+                .map(|r| r.trim_start_matches("easons").trim_start_matches(':').trim().to_string())
+                .unwrap_or_default();
+            EngineReport {
+                id: ID.into(),
+                name: "AI Judge (local model)".into(),
+                description: DESC.into(),
+                ai_score: score.clamp(0.0, 100.0),
+                weight: 1.0,
+                signals: vec![Signal { label: "Reasons".into(), value: reasons, note: format!("Model: {name} (offline)") }],
+                flagged: vec![],
+                error: None,
+            }
+        }
+        Ok(Err(e)) => error_report(e),
+        Err(e) => error_report(e.to_string()),
+    }
+}
+
 pub fn error_report(msg: String) -> EngineReport {
     EngineReport {
         id: ID.into(),

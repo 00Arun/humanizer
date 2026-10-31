@@ -20,7 +20,7 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 regex = "1"
 pdf-extract = "0.9"
@@ -33,3 +33,10 @@ lto = true
 opt-level = "s"
 strip = true
 panic = "abort"
+
+# Local AI engine (llama.cpp). Metal on macOS, OpenMP-accelerated CPU elsewhere.
+[target.'cfg(target_os = "macos")'.dependencies]
+llama-cpp-2 = { version = "0.1.160", default-features = false, features = ["metal"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+llama-cpp-2 = { version = "0.1.160", default-features = false, features = ["openmp"] }

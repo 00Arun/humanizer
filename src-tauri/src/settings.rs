@@ -20,6 +20,11 @@ pub struct Settings {
     pub default_intensity: String,
     /// Run the model-based "AI Judge" alongside the five local detectors.
     pub ai_judge_enabled: bool,
+    /// auto | api | local | rules. Auto = API key if set, else the offline
+    /// model if downloaded, else rules.
+    pub engine_mode: String,
+    /// Custom GGUF path; empty means the default download location.
+    pub local_model_path: String,
 }
 
 impl Default for Settings {
@@ -31,6 +36,8 @@ impl Default for Settings {
             default_style: "natural".to_string(),
             default_intensity: "balanced".to_string(),
             ai_judge_enabled: true,
+            engine_mode: "auto".to_string(),
+            local_model_path: String::new(),
         }
     }
 }
@@ -75,6 +82,10 @@ impl Settings {
         if !["low", "medium", "high", "xhigh", "max"].contains(&self.effort.as_str()) {
             self.effort = "high".to_string();
         }
+        if !["auto", "api", "local", "rules"].contains(&self.engine_mode.as_str()) {
+            self.engine_mode = "auto".to_string();
+        }
+        self.local_model_path = self.local_model_path.trim().to_string();
     }
 
     pub fn has_api_key(&self) -> bool {

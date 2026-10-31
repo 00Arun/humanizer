@@ -13,8 +13,7 @@ Built in Rust with [Tauri 2](https://v2.tauri.app). No third-party humanizer or 
 | Humanize pasted text | Paste → pick a register (Natural / Academic / Professional / Casual / Creative) and intensity (Light / Balanced / Strong) → Humanize → Copy or Save as .docx/.txt |
 | Humanize files | Drop `.docx`, `.pdf`, `.md`, `.txt`. Word files are edited **surgically**: paragraph styles, headings, numbering, tables, images, headers/footers stay intact; only the prose runs are replaced. PDFs are saved as `.docx`. |
 | Detection suite | 5 offline statistical engines + an optional model-based **AI Judge**, combined into one 0-100 machine-likeness score with per-sentence flags and in-context highlights |
-| Rewrite engine | Claude **Fable 5.1** (default; Opus 5.5 / Sonnet 5.5 selectable) via your own Anthropic API key, with our prompt, paragraph-chunked and run in parallel. Strong mode runs a second pass guided by our own detector's flags. |
-| Offline fallback | With no API key, a rule engine still removes machine idioms, adds contractions, softens em-dashes and varies sentence rhythm |
+| Rewrite engines | **Offline AI** – Qwen3-4B-Instruct (GGUF, Apache-2.0) runs in-process via llama.cpp (Metal on Apple Silicon, multi-threaded CPU on Windows); one-time 2.5 GB download from Settings, no key, no internet afterwards. **Claude API** – Fable 5.1 (default; Opus 5.5 / Sonnet 5.5 selectable) with your own key, paragraph-chunked and run in parallel. **Rules** – the deterministic engine that always runs as a polish pass and as the last resort. Engine choice is automatic (API key → offline model → rules) or forced in Settings. Strong mode adds a second pass guided by our own detector's flags on every engine. |
 | Updates | The latest installers always sit in [`releases/`](releases/). Run the new installer over the old version: NSIS and the macOS DMG upgrade in place. *Settings → Get latest version* opens that folder. |
 | Installers | macOS `.dmg` (custom background), Windows NSIS `-setup.exe` (branded header/sidebar, per-user install, license page) |
 
@@ -85,3 +84,7 @@ Users install by downloading the file for their platform and running it; an exis
 ## License
 
 See `LICENSE`. © 2026 Arun Pandey, Arun AI Studio.
+
+## Offline AI model
+
+Settings → *Offline AI model* → **Download**. The file goes to the app data folder (`~/Library/Application Support/com.arunaistudio.humanizer/models/` on macOS, `%APPDATA%\com.arunaistudio.humanizer\models\` on Windows); downloads resume if interrupted. Any other `.gguf` instruct model can be selected with *Use my own .gguf…*. Building from source needs `cmake` (`brew install cmake` on macOS; present on GitHub's runners and in Visual Studio Build Tools).

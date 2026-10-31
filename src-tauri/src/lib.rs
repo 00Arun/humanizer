@@ -5,15 +5,19 @@ mod humanizer;
 mod settings;
 mod text;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use humanizer::local_llm::{Downloader, LocalLlm};
 use settings::Settings;
 use tauri::Manager;
 
-/// Shared state for the whole app: persisted settings plus one HTTP client.
+/// Shared state for the whole app: persisted settings, one HTTP client, the
+/// lazily loaded offline model and the model downloader.
 pub struct AppState {
     pub settings: Mutex<Settings>,
     pub http: reqwest::Client,
+    pub local_llm: tokio::sync::Mutex<Option<Arc<LocalLlm>>>,
+    pub downloader: Arc<Downloader>,
 }
 
 pub fn run() {
@@ -30,6 +34,8 @@ pub fn run() {
             app.manage(AppState {
                 settings: Mutex::new(settings),
                 http,
+                local_llm: tokio::sync::Mutex::new(None),
+                downloader: Arc::new(Downloader::default()),
             });
             Ok(())
         })
@@ -44,6 +50,12 @@ pub fn run() {
             commands::humanize_document,
             commands::save_text_as,
             commands::app_info,
+            commands::local_model_status,
+            commands::download_local_model,
+            commands::cancel_model_download,
+            commands::delete_local_model,
+            commands::use_custom_model,
+            commands::test_local_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Humanizer");

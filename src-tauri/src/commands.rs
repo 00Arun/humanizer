@@ -3,12 +3,17 @@
 use std::{path::PathBuf, sync::Arc};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{
     detectors::{self, judge, DetectionReport},
     documents,
-    humanizer::{self, claude::ClaudeClient, HumanizeOptions, ProgressFn},
+    humanizer::{
+        self,
+        claude::ClaudeClient,
+        local_llm::{self, DownloadProgress, LocalLlm, ModelStatus},
+        Engine, HumanizeOptions, ProgressFn,
+    },
     settings::Settings,
     text, AppState,
 };
@@ -29,21 +34,67 @@ fn progress_fn(app: &AppHandle, id: &str) -> ProgressFn {
     })
 }
 
-fn client_from(state: &AppState) -> Option<Arc<ClaudeClient>> {
-    let s = state.settings.lock().unwrap();
+fn settings_of(state: &AppState) -> Settings {
+    state.settings.lock().unwrap().clone()
+}
+
+fn api_client(state: &AppState, s: &Settings) -> Option<Arc<ClaudeClient>> {
     if !s.has_api_key() {
         return None;
     }
     Some(Arc::new(ClaudeClient { http: state.http.clone(), api_key: s.anthropic_api_key.clone(), model: s.model.clone(), effort: s.effort.clone() }))
 }
 
-fn judge_enabled(state: &AppState) -> bool {
-    state.settings.lock().unwrap().ai_judge_enabled
+/// Where the GGUF lives: a custom path from Settings or the default download spot.
+fn model_path(app: &AppHandle, s: &Settings) -> PathBuf {
+    if !s.local_model_path.is_empty() {
+        return PathBuf::from(&s.local_model_path);
+    }
+    app.path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join("models")
+        .join(local_llm::DEFAULT_MODEL_FILE)
+}
+
+/// Loads (or reuses) the offline model. Returns None when no file exists.
+async fn local_engine(app: &AppHandle, state: &AppState, s: &Settings) -> Result<Option<Arc<LocalLlm>>, String> {
+    let path = model_path(app, s);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let mut slot = state.local_llm.lock().await;
+    if let Some(l) = slot.as_ref() {
+        if l.path == path {
+            return Ok(Some(l.clone()));
+        }
+    }
+    let p = path.clone();
+    let loaded = tokio::task::spawn_blocking(move || LocalLlm::load(&p)).await.map_err(|e| e.to_string())??;
+    let arc = Arc::new(loaded);
+    *slot = Some(arc.clone());
+    Ok(Some(arc))
+}
+
+/// Picks the engine according to `engine_mode` and what is available.
+async fn resolve_engine(app: &AppHandle, state: &AppState) -> Result<Engine, String> {
+    let s = settings_of(state);
+    match s.engine_mode.as_str() {
+        "api" => Ok(api_client(state, &s).map(Engine::Api).unwrap_or(Engine::Rules)),
+        "rules" => Ok(Engine::Rules),
+        "local" => Ok(local_engine(app, state, &s).await?.map(Engine::Local).unwrap_or(Engine::Rules)),
+        _ => {
+            if let Some(c) = api_client(state, &s) {
+                return Ok(Engine::Api(c));
+            }
+            Ok(local_engine(app, state, &s).await?.map(Engine::Local).unwrap_or(Engine::Rules))
+        }
+    }
 }
 
 #[tauri::command]
 pub fn get_settings(state: State<'_, AppState>) -> Settings {
-    state.settings.lock().unwrap().clone()
+    settings_of(&state)
 }
 
 #[tauri::command]
@@ -56,7 +107,8 @@ pub fn save_settings(app: AppHandle, state: State<'_, AppState>, mut settings: S
 
 #[tauri::command]
 pub async fn test_connection(state: State<'_, AppState>) -> Result<String, String> {
-    let client = client_from(&state).ok_or("Enter an Anthropic API key first.")?;
+    let s = settings_of(&state);
+    let client = api_client(&state, &s).ok_or("Enter an Anthropic API key first.")?;
     client.ping().await
 }
 
@@ -75,26 +127,30 @@ pub async fn humanize_text(app: AppHandle, state: State<'_, AppState>, text_in: 
     if text::word_count(&text_in) < 3 {
         return Err("Paste some text first.".into());
     }
-    let client = client_from(&state);
+    let progress = progress_fn(&app, "text");
+    progress(0, 1, "Loading engine");
+    let engine = resolve_engine(&app, &state).await?;
     let opts = HumanizeOptions { style, intensity };
     let paras = text::paragraphs(&text_in);
     let before = detectors::detect_local(&text_in);
-    let outcome = humanizer::humanize_paragraphs(client, paras, &opts, progress_fn(&app, "text")).await;
+    let outcome = humanizer::humanize_paragraphs(engine, paras, &opts, progress).await;
     let out = outcome.paragraphs.join("\n\n");
     let after = detectors::detect_local(&out);
     Ok(HumanizeTextResult { text: out, engine: outcome.engine, passes: outcome.passes, warnings: outcome.warnings, before, after })
 }
 
 #[tauri::command]
-pub async fn detect_text(state: State<'_, AppState>, text_in: String, with_judge: bool) -> Result<DetectionReport, String> {
+pub async fn detect_text(app: AppHandle, state: State<'_, AppState>, text_in: String, with_judge: bool) -> Result<DetectionReport, String> {
     if text::word_count(&text_in) < 3 {
         return Err("Paste some text first.".into());
     }
     let mut report = detectors::detect_local(&text_in);
-    if with_judge && judge_enabled(&state) {
-        let engine = match client_from(&state) {
-            Some(client) => judge::judge(&client, &text_in).await,
-            None => judge::error_report("No API key configured; AI Judge skipped.".into()),
+    let s = settings_of(&state);
+    if with_judge && s.ai_judge_enabled {
+        let engine = match resolve_engine(&app, &state).await? {
+            Engine::Api(client) => judge::judge(&client, &text_in).await,
+            Engine::Local(llm) => judge::judge_local(llm, text_in.clone()).await,
+            Engine::Rules => judge::error_report("No AI engine available: add an API key or download the offline model in Settings.".into()),
         };
         let mut engines = report.engines;
         engines.push(engine);
@@ -157,13 +213,14 @@ pub struct DocResult {
 pub async fn humanize_document(app: AppHandle, state: State<'_, AppState>, path: String, out_path: String, style: String, intensity: String) -> Result<DocResult, String> {
     let src = PathBuf::from(&path);
     let doc = tokio::task::spawn_blocking(move || documents::load(&src)).await.map_err(|e| e.to_string())??;
-    let client = client_from(&state);
+    let progress = progress_fn(&app, &path);
+    progress(0, 1, "Loading engine");
+    let engine = resolve_engine(&app, &state).await?;
     let opts = HumanizeOptions { style, intensity };
 
-    // Only editable paragraphs go through the engine; others pass straight back.
     let inputs: Vec<String> = doc.paragraphs.iter().map(|p| if p.editable { p.text.clone() } else { String::new() }).collect();
     let before = detectors::detect_local(&doc.plain_text()).overall;
-    let outcome = humanizer::humanize_paragraphs(client, inputs, &opts, progress_fn(&app, &path)).await;
+    let outcome = humanizer::humanize_paragraphs(engine, inputs, &opts, progress).await;
 
     let new_texts: Vec<String> = doc
         .paragraphs
@@ -221,4 +278,108 @@ pub fn app_info(app: AppHandle) -> AppInfo {
         os: std::env::consts::OS.into(),
         arch: std::env::consts::ARCH.into(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Offline model management
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn local_model_status(app: AppHandle, state: State<'_, AppState>) -> Result<ModelStatus, String> {
+    let s = settings_of(&state);
+    let path = model_path(&app, &s);
+    let meta = std::fs::metadata(&path).ok();
+    let loaded = state.local_llm.lock().await.as_ref().map_or(false, |l| l.path == path);
+    Ok(ModelStatus {
+        installed: meta.as_ref().map_or(false, |m| m.is_file()),
+        name: path.file_stem().and_then(|n| n.to_str()).unwrap_or("").to_string(),
+        path: path.to_string_lossy().to_string(),
+        size_bytes: meta.map_or(0, |m| m.len()),
+        loaded,
+        downloading: state.downloader.active.load(std::sync::atomic::Ordering::SeqCst),
+        accelerator: LocalLlm::accelerator().to_string(),
+        default_label: local_llm::DEFAULT_MODEL_LABEL.to_string(),
+        default_size_bytes: 2_497_281_120,
+    })
+}
+
+/// Starts the download in the background; progress arrives as
+/// `model-download` events. Returns immediately.
+#[tauri::command]
+pub async fn download_local_model(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let mut s = settings_of(&state);
+    // A download always targets the default location; clear any custom path.
+    if !s.local_model_path.is_empty() {
+        s.local_model_path.clear();
+        s.save(&app)?;
+        *state.settings.lock().unwrap() = s.clone();
+    }
+    let dest = model_path(&app, &s);
+    if dest.is_file() {
+        return Err("The model is already installed.".into());
+    }
+    let http = state.http.clone();
+    let dl = state.downloader.clone();
+    let app2 = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let emitter = app2.clone();
+        let _ = local_llm::download(http, local_llm::DEFAULT_MODEL_URL, &dest, dl, move |p: DownloadProgress| {
+            let _ = emitter.emit("model-download", p);
+        })
+        .await;
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub fn cancel_model_download(state: State<'_, AppState>) {
+    state.downloader.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[tauri::command]
+pub async fn delete_local_model(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let s = settings_of(&state);
+    let path = model_path(&app, &s);
+    *state.local_llm.lock().await = None;
+    if path.is_file() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    let part = path.with_extension("gguf.part");
+    if part.is_file() {
+        let _ = std::fs::remove_file(part);
+    }
+    Ok(())
+}
+
+/// Points the local engine at a GGUF the user already has.
+#[tauri::command]
+pub async fn use_custom_model(app: AppHandle, state: State<'_, AppState>, path: String) -> Result<ModelStatus, String> {
+    if !path.to_lowercase().ends_with(".gguf") || !PathBuf::from(&path).is_file() {
+        return Err("Pick a .gguf model file.".into());
+    }
+    let mut s = settings_of(&state);
+    s.local_model_path = path;
+    s.save(&app)?;
+    *state.settings.lock().unwrap() = s;
+    *state.local_llm.lock().await = None;
+    local_model_status(app, state).await
+}
+
+/// Loads the model and times a short generation.
+#[tauri::command]
+pub async fn test_local_model(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+    let s = settings_of(&state);
+    let t0 = std::time::Instant::now();
+    let llm = local_engine(&app, &state, &s).await?.ok_or("No offline model installed yet.")?;
+    let load_ms = t0.elapsed().as_millis();
+    let t1 = std::time::Instant::now();
+    let l = llm.clone();
+    let out = tokio::task::spawn_blocking(move || {
+        l.generate("Rewrite the user's sentence in plain, natural English. Output only the sentence.", "It is important to note that the utilization of this tool significantly enhances productivity.", 60, 0.7, 42)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let gen_ms = t1.elapsed().as_millis().max(1);
+    let toks = text::word_count(&out).max(1) as f64 * 1.3;
+    Ok(format!("{} ready on {} (load {:.1}s, ~{:.0} tokens/s). Sample: “{}”", llm.name, LocalLlm::accelerator(), load_ms as f64 / 1000.0, toks / (gen_ms as f64 / 1000.0), out))
 }
