@@ -80,3 +80,36 @@ jobs:
           prerelease: false
           includeUpdaterJson: true
           args: ${{ matrix.args }}
+
+  # The code repo is private, so installed apps cannot read its releases.
+  # Mirror the finished release (installers, signatures, latest.json) to the
+  # public binaries-only repo that the updater endpoint points at.
+  publish-public:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download this release's assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir assets
+          ls -la assets
+      - name: Re-publish to the public releases repo
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+          PUBLIC_REPO: 00Arun/humanizer-releases
+        run: |
+          set -euo pipefail
+          # latest.json must reference the public repo's download URLs.
+          sed -i "s#github.com/${GITHUB_REPOSITORY}/releases/download#github.com/${PUBLIC_REPO}/releases/download#g" assets/latest.json
+          if gh release view "$GITHUB_REF_NAME" --repo "$PUBLIC_REPO" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" assets/* --repo "$PUBLIC_REPO" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" assets/* --repo "$PUBLIC_REPO" \
+              --title "Humanizer $GITHUB_REF_NAME" \
+              --notes "Humanizer by Arun Pandey · Arun AI Studio · https://arun-pandey.com.np/"
+          fi
