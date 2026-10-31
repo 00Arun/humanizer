@@ -60,6 +60,8 @@ npm run tauri build      # installers in src-tauri/target/release/bundle/
 
 ## Releasing a new version
 
+Installers under `releases/` are stored with **Git LFS** (see `.gitattributes`), so each release replaces an LFS object instead of growing the repo. Clone with `git lfs install && git clone …` to get the binaries rather than pointer files.
+
 Only the **latest** installers are kept, in `releases/`:
 
 | File | Built by |
@@ -97,4 +99,4 @@ Humanizer ships small and fetches its language model on first launch (no click n
 
 Files live in the app data folder (`~/Library/Application Support/com.arunaistudio.humanizer/models/` on macOS, `%APPDATA%\com.arunaistudio.humanizer\models\` on Windows); downloads resume if interrupted. Any other `.gguf` instruct model works via *Use my own .gguf…*. Every local rewrite is gated by the detector suite: 1–3 candidates are drawn (Light/Balanced/Strong), the most human-scoring one wins, and the original is kept if none beats it.
 
-**Full offline installer.** `./scripts/build-full.sh` produces a macOS DMG with the best model baked in (~7.5 GB) in `releases-full/`. It is too large for GitHub (100 MB repo / 2 GB release limits), so host it on your own site or Drive. Building from source needs `cmake` (`brew install cmake`; present on GitHub runners and in Visual Studio Build Tools).
+**Full offline installer.** `./scripts/build-full.sh` produces a macOS DMG with the best model baked in (~7.5 GB) in `releases-full/`, and `./scripts/publish-full.sh` uploads it to a Hugging Face Hub repo (LFS-backed, 50 GB per file, no download caps). It cannot go on GitHub: even with LFS, GitHub stops at 2 GB per file and 1 GB/month of free LFS bandwidth. Building from source needs `cmake` (`brew install cmake`; present on GitHub runners and in Visual Studio Build Tools).
