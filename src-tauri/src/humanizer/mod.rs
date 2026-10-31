@@ -195,9 +195,9 @@ async fn local_ai(llm: Arc<LocalLlm>, paragraphs: Vec<String>, opts: &HumanizeOp
     let score_of = |ps: &[String]| detectors::detect_local(&polish_all(ps).join("\n\n")).overall;
 
     let start_score = score_of(&current);
-    let (out, failed, reasons) = local_pass(&llm, &system, &current, None, candidates, seed, progress.clone(), "Rewriting with local AI").await;
+    let (out, failed, reasons) = local_pass(&llm, &system, &current, None, candidates, seed, contractions, progress.clone(), "Rewriting with local AI").await;
     if failed > 0 {
-        warnings.push(format!("{failed} paragraph(s) fell back to the rule engine: {}.", reasons.join("; ")));
+        warnings.push(format!("{failed} paragraph(s) kept a lighter, rule-based rewrite ({}).", reasons.join("; ")));
     }
     let mut passes = 1;
     // Keep the first pass only if the text as a whole did not get worse.
@@ -219,7 +219,7 @@ async fn local_ai(llm: Arc<LocalLlm>, paragraphs: Vec<String>, opts: &HumanizeOp
             "Another pass. The text still reads machine-like ({:.0}/100): uniform sentence lengths, stock phrasing, tidy structure. Rewrite with more varied rhythm, plainer and more specific wording, and different sentence openers.",
             report.overall
         );
-        let (refined, _, _) = local_pass_subset(&llm, &system, &current, &targets, Some(&feedback), candidates, seed.wrapping_add(passes as u32 * 97), progress.clone(), &format!("Pass {} with local AI", passes + 1)).await;
+        let (refined, _, _) = local_pass_subset(&llm, &system, &current, &targets, Some(&feedback), candidates, seed.wrapping_add(passes as u32 * 97), contractions, progress.clone(), &format!("Pass {} with local AI", passes + 1)).await;
         passes += 1;
         let s = score_of(&refined);
         if s + 0.5 < best_score {
@@ -242,17 +242,29 @@ async fn local_ai(llm: Arc<LocalLlm>, paragraphs: Vec<String>, opts: &HumanizeOp
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn local_pass(llm: &Arc<LocalLlm>, system: &str, paragraphs: &[String], feedback: Option<&str>, candidates: usize, seed: u32, progress: ProgressFn, stage: &str) -> (Vec<String>, usize, Vec<String>) {
+async fn local_pass(llm: &Arc<LocalLlm>, system: &str, paragraphs: &[String], feedback: Option<&str>, candidates: usize, seed: u32, contractions: bool, progress: ProgressFn, stage: &str) -> (Vec<String>, usize, Vec<String>) {
     let targets: Vec<usize> = paragraphs.iter().enumerate().filter(|(_, p)| eligible(p)).map(|(i, _)| i).collect();
-    local_pass_subset(llm, system, paragraphs, &targets, feedback, candidates, seed, progress, stage).await
+    local_pass_subset(llm, system, paragraphs, &targets, feedback, candidates, seed, contractions, progress, stage).await
+}
+
+/// Machine-likeness of the whole document with `candidate` (already
+/// polished) in slot `index`. Gating on the document, not the paragraph,
+/// is what makes short paragraphs judgeable: alone they are near-invisible
+/// to the detectors.
+fn doc_score(doc_polished: &[String], index: usize, candidate_polished: &str) -> f64 {
+    let mut parts: Vec<&str> = doc_polished.iter().map(|s| s.as_str()).collect();
+    parts[index] = candidate_polished;
+    detectors::detect_local(&parts.join("\n\n")).overall
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn local_pass_subset(llm: &Arc<LocalLlm>, system: &str, paragraphs: &[String], targets: &[usize], feedback: Option<&str>, candidates: usize, seed: u32, progress: ProgressFn, stage: &str) -> (Vec<String>, usize, Vec<String>) {
+async fn local_pass_subset(llm: &Arc<LocalLlm>, system: &str, paragraphs: &[String], targets: &[usize], feedback: Option<&str>, candidates: usize, seed: u32, contractions: bool, progress: ProgressFn, stage: &str) -> (Vec<String>, usize, Vec<String>) {
     let total = targets.len();
     let mut out = paragraphs.to_vec();
     let mut failed = 0;
     let mut reasons: Vec<String> = Vec::new();
+    // The document as the detectors will see it, updated as paragraphs are accepted.
+    let mut doc_polished: Vec<String> = out.iter().map(|p| if eligible(p) { local::polish(p, contractions) } else { p.clone() }).collect();
     progress(0, total, stage);
     for (n, &i) in targets.iter().enumerate() {
         let llm = llm.clone();
@@ -262,11 +274,15 @@ async fn local_pass_subset(llm: &Arc<LocalLlm>, system: &str, paragraphs: &[Stri
         };
         let original = paragraphs[i].clone();
         let seed = seed.wrapping_add(i as u32 * 1_000);
-        let rewritten = tokio::task::spawn_blocking(move || rewrite_one(&llm, &system, &original, seed, candidates))
+        let doc = doc_polished.clone();
+        let rewritten = tokio::task::spawn_blocking(move || rewrite_one(&llm, &system, &original, seed, candidates, &doc, i, contractions))
             .await
             .unwrap_or_else(|e| Err(format!("worker panicked: {e}")));
         match rewritten {
-            Ok(t) => out[i] = t,
+            Ok(t) => {
+                doc_polished[i] = local::polish(&t, contractions);
+                out[i] = t;
+            }
             Err(why) => {
                 // The model could not beat the original; the rule engine still can.
                 failed += 1;
@@ -281,22 +297,18 @@ async fn local_pass_subset(llm: &Arc<LocalLlm>, system: &str, paragraphs: &[Stri
     (out, failed, reasons)
 }
 
-/// Machine-likeness of one paragraph, after the polish pass, as the gate sees it.
-fn gate_score(p: &str) -> f64 {
-    detectors::detect_local(&local::polish(p, true)).overall
-}
-
 static QUOTE_WRAP_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"^\s*["“]([\s\S]*)["”]\s*$"#).unwrap());
 static LABEL_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?im)^\s*(?:rewritten(?: paragraph| text| version)?|revised(?: paragraph| text)?|output|answer|humanized(?: text)?)\s*:\s*").unwrap());
 
-/// One paragraph through the local model, gated by our own detectors. Draws
-/// `candidates` versions (plus one corrective retry if they all read worse
-/// than the input), keeps the one our detectors score most human, and only
-/// returns it if it is at least as human as the input.
-fn rewrite_one(llm: &LocalLlm, system: &str, original: &str, seed: u32, candidates: usize) -> Result<String, String> {
+/// One paragraph through the local model, gated by our own detectors on the
+/// whole document. Draws `candidates` versions (plus one corrective retry if
+/// they all read worse), keeps the one that makes the document score most
+/// human, and only returns it if the document does not get worse.
+#[allow(clippy::too_many_arguments)]
+fn rewrite_one(llm: &LocalLlm, system: &str, original: &str, seed: u32, candidates: usize, doc_polished: &[String], index: usize, contractions: bool) -> Result<String, String> {
     let words = text::word_count(original).max(1);
     let max_new = ((words as f64 * 2.4) as usize + 48).min(1400);
-    let baseline = gate_score(original);
+    let baseline = doc_score(doc_polished, index, &doc_polished[index]);
     let temps = [0.7f32, 0.9, 0.6, 0.8];
     let mut best: Option<(f64, String)> = None;
     let mut last_err: Option<String> = None;
@@ -310,7 +322,7 @@ fn rewrite_one(llm: &LocalLlm, system: &str, original: &str, seed: u32, candidat
         match llm.generate(&sys, original, max_new, temp, seed.wrapping_add(attempt)) {
             Ok(raw) => match validate(&raw, original) {
                 Some(t) => {
-                    let score = gate_score(&t);
+                    let score = doc_score(doc_polished, index, &local::polish(&t, contractions));
                     if best.as_ref().map_or(true, |(s, _)| score < *s) {
                         best = Some((score, t));
                     }
@@ -321,16 +333,17 @@ fn rewrite_one(llm: &LocalLlm, system: &str, original: &str, seed: u32, candidat
         }
         attempt += 1;
         // All planned candidates read worse than the input: one corrective retry.
-        if attempt as usize == planned && planned < 4 && best.as_ref().map_or(true, |(s, _)| *s > baseline + 2.0) {
+        if attempt as usize == planned && planned < 4 && best.as_ref().map_or(true, |(s, _)| *s > baseline) {
             planned += 1;
         }
+        // Clearly better already: stop spending time.
+        if best.as_ref().map_or(false, |(s, _)| *s + 3.0 <= baseline) {
+            break;
+        }
     }
-    // Near the human band every point counts; further out a tiny loss is a
-    // fair price for a genuinely different rewrite.
-    let tolerance = if baseline <= HUMAN_TARGET + 15.0 { 0.0 } else { 2.0 };
     match best {
-        Some((score, t)) if score <= baseline + tolerance => Ok(t),
-        Some((score, _)) => Err(format!("no candidate read more human than the input ({score:.0} vs {baseline:.0})")),
+        Some((score, t)) if score <= baseline + 0.3 => Ok(t),
+        Some((score, _)) => Err(format!("no candidate made the text read more human ({score:.0} vs {baseline:.0})")),
         None => Err(match last_err {
             Some(e) => format!("model error: {e}"),
             None => format!("{invalid} candidate(s) failed validation"),

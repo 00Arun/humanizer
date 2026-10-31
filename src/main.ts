@@ -426,7 +426,9 @@ $("btn-clear").addEventListener("click", () => {
   output.value = "";
   lastAfter = null;
   $("detect-panel").hidden = true;
-  $("score-compare").hidden = true;
+  $("verdict").hidden = true;
+  $("vstatus").hidden = true;
+  $("details-wrap").hidden = true;
   $("warnings").hidden = true;
   updateCounts();
 });
@@ -496,14 +498,18 @@ $("btn-humanize").addEventListener("click", async () => {
     output.value = r.text;
     lastAfter = r.after;
     updateCounts();
-    showCompare(r.before.overall, r.after.overall);
-    if (r.warnings.length) {
-      $("warnings").innerHTML = r.warnings.map((w) => `<div>⚠ ${esc(w)}</div>`).join("");
-      $("warnings").hidden = false;
-    }
+    const hb = humanPct(r.before.overall);
+    const ha = humanPct(r.after.overall);
+    const unchanged = r.text.trim() === text.trim();
+    let status = unchanged
+      ? `<b>No change this time.</b> Nothing read more human than what you gave. Click Humanize for a fresh attempt, or try Strong.`
+      : ha >= 75
+        ? `<b>Done.</b> ${r.passes} pass${r.passes > 1 ? "es" : ""} with ${esc(r.engine)}. Copy it, or click Humanize again for another variation.`
+        : `<b>Improved ${hb}% → ${ha}% human</b> in ${r.passes} pass${r.passes > 1 ? "es" : ""}. Click Humanize again to push further, or switch Intensity to Strong.`;
+    showVerdict(r.before.overall, r.after.overall, status);
+    $("warnings").innerHTML = r.warnings.map((w) => `<div>ⓘ ${esc(w)}</div>`).join("");
+    $("warnings").hidden = r.warnings.length === 0;
     renderDetection(r.after, r.text, `Result · ${r.engine} · ${r.passes} pass${r.passes > 1 ? "es" : ""}`);
-    const a = Math.round(r.after.overall);
-    toast(a <= 25 ? `Done: ${Math.round(r.before.overall)} → ${a}. In the human band.` : `Done: ${Math.round(r.before.overall)} → ${a}. Click Humanize again for another pass.`, "ok", 5000);
   } catch (e) {
     toast(errMsg(e), "err", 7000);
   } finally {
@@ -512,15 +518,37 @@ $("btn-humanize").addEventListener("click", async () => {
   }
 });
 
-function showCompare(before: number, after: number) {
-  const wrap = $("score-compare");
-  wrap.hidden = false;
-  const b = $("chip-before");
-  const a = $("chip-after");
-  b.textContent = `${Math.round(before)}`;
-  a.textContent = `${Math.round(after)}`;
-  b.className = `chip c-${band(before)}`;
-  a.className = `chip c-${band(after)}`;
+/// Human score on a 0-100 "% human" scale, from our machine-likeness.
+const humanPct = (machine: number) => Math.max(0, Math.min(100, Math.round(100 - machine)));
+function verdictFor(h: number): { cls: "good" | "mid" | "bad"; label: string; color: string } {
+  if (h >= 75) return { cls: "good", label: "Looks Human", color: "var(--ok)" };
+  if (h >= 60) return { cls: "good", label: "Mostly Human", color: "var(--ok)" };
+  if (h >= 40) return { cls: "mid", label: "Mixed", color: "var(--warn)" };
+  return { cls: "bad", label: "Looks AI", color: "var(--bad)" };
+}
+function paintCard(which: "before" | "after", machine: number, sub: string) {
+  const h = humanPct(machine);
+  const v = verdictFor(h);
+  const card = $(`vcard-${which}`);
+  card.className = `vcard ${v.cls}`;
+  card.style.setProperty("--p", `${h}`);
+  card.style.setProperty("--c", v.color);
+  $(`ring-val-${which}`).textContent = `${h}%`;
+  $(`vbadge-${which}`).textContent = `✓ ${v.label}`.replace("✓ Looks AI", "⚠ Looks AI").replace("✓ Mixed", "~ Mixed");
+  $(`vsub-${which}`).textContent = sub;
+}
+function showVerdict(before: number | null, after: number | null, status: string) {
+  $("verdict").hidden = false;
+  const two = before !== null && after !== null;
+  $("vcard-before").hidden = before === null;
+  $("varrow").hidden = !two;
+  $("vcard-after").hidden = after === null;
+  if (before !== null) paintCard("before", before, "Original text");
+  if (after !== null) paintCard("after", after, "After Humanizer");
+  const st = $("vstatus");
+  st.innerHTML = status;
+  st.hidden = !status;
+  $("details-wrap").hidden = false;
 }
 
 async function runDetection(text: string, title: string) {
@@ -528,11 +556,16 @@ async function runDetection(text: string, title: string) {
   const useJudge = $<HTMLInputElement>("use-judge").checked;
   const panel = $("detect-panel");
   panel.hidden = false;
+  $("details-wrap").hidden = false;
   $("detect-title").textContent = title;
-  $("detect-verdict").textContent = useJudge && settings.anthropic_api_key ? "Running 5 engines + AI Judge…" : "Running 5 engines…";
+  $("detect-verdict").textContent = useJudge ? "Running 5 engines + AI Judge…" : "Running 5 engines…";
   $("engines").innerHTML = "";
   try {
     const r = await invoke<DetectionReport>("detect_text", { textIn: text, withJudge: useJudge });
+    const isOriginal = title === "Original text";
+    const h = humanPct(r.overall);
+    const v = verdictFor(h);
+    showVerdict(isOriginal ? r.overall : null, isOriginal ? null : r.overall, `<b>${v.label}</b> · ${h}% human · ${r.engines.filter((e) => !e.error).length} engines agree on this reading.`);
     renderDetection(r, text, title);
   } catch (e) {
     toast(errMsg(e), "err");
@@ -544,6 +577,7 @@ $("btn-check-out").addEventListener("click", () => runDetection(output.value, "H
 function renderDetection(r: DetectionReport, text: string, title: string) {
   const panel = $("detect-panel");
   panel.hidden = false;
+  $("details-wrap").hidden = false;
   $("detect-title").textContent = title;
   const g = $("gauge");
   g.style.setProperty("--p", `${r.overall}`);

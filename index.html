@@ -111,14 +111,28 @@
               <div class="bar"><div class="fill" id="text-progress-fill"></div></div>
               <span id="text-progress-label">Working…</span>
             </div>
-            <div class="score-compare" id="score-compare" hidden>
-              <span>Machine-likeness</span>
-              <span class="chip" id="chip-before">—</span>
-              <span class="arrow">→</span>
-              <span class="chip" id="chip-after">—</span>
-            </div>
           </div>
 
+          <div class="verdict" id="verdict" hidden>
+            <div class="vcard" id="vcard-before">
+              <div class="vlabel">ORIGINAL</div>
+              <div class="vsub" id="vsub-before">Scanned by Humanizer</div>
+              <div class="ring" id="ring-before"><div class="ring-inner"><span class="ring-val" id="ring-val-before">—</span><span class="ring-unit">human</span></div></div>
+              <div class="vbadge" id="vbadge-before">—</div>
+            </div>
+            <div class="varrow" id="varrow">→</div>
+            <div class="vcard" id="vcard-after">
+              <div class="vlabel">HUMANIZED</div>
+              <div class="vsub" id="vsub-after">Scanned by Humanizer</div>
+              <div class="ring" id="ring-after"><div class="ring-inner"><span class="ring-val" id="ring-val-after">—</span><span class="ring-unit">human</span></div></div>
+              <div class="vbadge" id="vbadge-after">—</div>
+            </div>
+          </div>
+          <div class="vstatus" id="vstatus" hidden></div>
+          </div>
+
+          <details class="details-wrap" id="details-wrap" hidden>
+            <summary>Details: engines, flagged sentences, notes</summary>
           <div class="warnings" id="warnings" hidden></div>
 
           <div class="detect" id="detect-panel" hidden>
@@ -129,7 +143,6 @@
                 <div class="detect-verdict" id="detect-verdict">—</div>
                 <div class="muted" id="detect-meta"></div>
                 <div class="muted" id="detect-note"></div>
-                <div class="muted small">Scale: 0–25 reads as human, 25–40 human range, 40–60 mixed, 60+ machine-like. Genuine human writing scores about 10–35 on these engines; nothing scores 0.</div>
                 <label class="toggle-inline"><input type="checkbox" id="use-judge" checked /> Include AI Judge (model-based)</label>
               </div>
             </div>
@@ -139,6 +152,7 @@
               <div class="highlight" id="highlight"></div>
             </div>
           </div>
+          </details>
         </section>
 
         <!-- ============ DOCUMENTS ============ -->
