@@ -61,11 +61,11 @@ npm run tauri build      # installers in src-tauri/target/release/bundle/
 
 ## Release & auto-update
 
-Installed copies poll `https://github.com/Arunpandey2/humanizer/releases/latest/download/latest.json` on launch. Change that URL in `src-tauri/tauri.conf.json` if the repository lives elsewhere.
+Installed copies poll `https://github.com/Arunpandey2/humanizer-releases/releases/latest/download/latest.json` on launch. The code repo (`Arunpandey2/humanizer`) is private; `humanizer-releases` is a public repo that holds only the installers, signatures and `latest.json`, mirrored there by CI.
 
 One-time setup:
 
-1. Create the GitHub repository and push this code.
+1. Code lives in the private repo `Arunpandey2/humanizer`. Create a second, PUBLIC, empty repo `Arunpandey2/humanizer-releases` (binaries only), and a fine-grained PAT with *Contents: read and write* on it → secret `RELEASES_REPO_TOKEN`.
 2. In **Settings → Secrets and variables → Actions** add:
    - `TAURI_SIGNING_PRIVATE_KEY` = contents of `~/.tauri/humanizer.key` (generated on this machine; **back it up** — without it installed copies can never update again)
    - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` = empty string (the key has no password)

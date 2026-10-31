@@ -9,6 +9,11 @@
 # Required repository secrets:
 #   TAURI_SIGNING_PRIVATE_KEY           contents of ~/.tauri/humanizer.key
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  leave empty if the key has none
+#   RELEASES_REPO_TOKEN                 fine-grained PAT with "Contents: write"
+#                                       on the PUBLIC Arunpandey2/humanizer-releases
+#                                       repo. This code repo is private, so the
+#                                       updater reads latest.json from that public
+#                                       binaries-only repo instead.
 # Optional (macOS notarisation, removes the Gatekeeper warning):
 #   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
 #   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
