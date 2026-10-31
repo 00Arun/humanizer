@@ -1,22 +1,7 @@
-# Builds signed installers for macOS (Apple Silicon + Intel) and Windows,
-# publishes them to a GitHub Release together with the updater manifest
-# (latest.json) that installed copies poll on launch.
-#
-# Trigger: push a tag like v0.1.1 (after bumping the version in
-# package.json, src-tauri/tauri.conf.json and src-tauri/Cargo.toml),
-# or run manually from the Actions tab.
-#
-# Required repository secrets:
-#   TAURI_SIGNING_PRIVATE_KEY           contents of ~/.tauri/humanizer.key
-#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  leave empty if the key has none
-#   RELEASES_REPO_TOKEN                 fine-grained PAT with "Contents: write"
-#                                       on the PUBLIC 00Arun/humanizer-releases
-#                                       repo. This code repo is private, so the
-#                                       updater reads latest.json from that public
-#                                       binaries-only repo instead.
-# Optional (macOS notarisation, removes the Gatekeeper warning):
-#   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
-#   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
+# When a version tag (v1.2.3) is pushed, build the Windows installer and the
+# Intel-Mac DMG on GitHub's runners and commit them into releases/ on main,
+# replacing the previous ones. The Apple-Silicon DMG is built locally by
+# scripts/release.sh. No secrets are needed.
 
 name: release
 
@@ -27,89 +12,64 @@ on:
 
 jobs:
   build:
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest
-            args: --target aarch64-apple-darwin
-          - platform: macos-latest
-            args: --target x86_64-apple-darwin
           - platform: windows-latest
             args: ""
+            bundle: nsis
+          - platform: macos-latest
+            args: --target x86_64-apple-darwin
+            bundle: dmg
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
           cache: npm
-
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-
+          targets: ${{ matrix.platform == 'macos-latest' && 'x86_64-apple-darwin' || '' }}
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-
       - run: npm ci
-
-      - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - run: npm run tauri build -- ${{ matrix.args }} --bundles ${{ matrix.bundle }}
+      - uses: actions/upload-artifact@v4
         with:
-          tagName: v__VERSION__
-          releaseName: Humanizer v__VERSION__
-          releaseBody: |
-            Humanizer by Arun Pandey · Arun AI Studio · https://arun-pandey.com.np/
+          name: installer-${{ matrix.platform }}
+          path: |
+            src-tauri/target/**/release/bundle/nsis/*-setup.exe
+            src-tauri/target/**/release/bundle/dmg/*.dmg
+          if-no-files-found: error
 
-            Installed copies update themselves automatically on next launch.
-          releaseDraft: false
-          prerelease: false
-          includeUpdaterJson: true
-          args: ${{ matrix.args }}
-
-  # The code repo is private, so installed apps cannot read its releases.
-  # Mirror the finished release (installers, signatures, latest.json) to the
-  # public binaries-only repo that the updater endpoint points at.
-  publish-public:
+  publish:
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
-      - name: Download this release's assets
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Replace previous installers in releases/
         run: |
           set -euo pipefail
-          mkdir -p assets
-          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir assets
-          ls -la assets
-      - name: Re-publish to the public releases repo
-        env:
-          GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
-          PUBLIC_REPO: 00Arun/humanizer-releases
+          mkdir -p releases
+          rm -f releases/*-setup.exe releases/Humanizer_*_x64.dmg
+          find artifacts -name '*-setup.exe' -exec cp {} releases/ \;
+          find artifacts -name '*.dmg' -exec cp {} releases/ \;
+          ls -la releases
+      - name: Commit
         run: |
-          set -euo pipefail
-          # latest.json must reference the public repo's download URLs.
-          sed -i "s#github.com/${GITHUB_REPOSITORY}/releases/download#github.com/${PUBLIC_REPO}/releases/download#g" assets/latest.json
-          if gh release view "$GITHUB_REF_NAME" --repo "$PUBLIC_REPO" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" assets/* --repo "$PUBLIC_REPO" --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" assets/* --repo "$PUBLIC_REPO" \
-              --title "Humanizer $GITHUB_REF_NAME" \
-              --notes "Humanizer by Arun Pandey · Arun AI Studio · https://arun-pandey.com.np/"
-          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add releases
+          git diff --cached --quiet && echo "nothing new" && exit 0
+          git commit -m "Add installers for ${GITHUB_REF_NAME}"
+          git push origin main

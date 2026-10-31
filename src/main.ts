@@ -3,8 +3,6 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { relaunch } from "@tauri-apps/plugin-process";
-import { check } from "@tauri-apps/plugin-updater";
 
 // ---------------------------------------------------------------------------
 // Types mirrored from the Rust side
@@ -16,7 +14,6 @@ interface Settings {
   default_style: string;
   default_intensity: string;
   ai_judge_enabled: boolean;
-  auto_update: boolean;
 }
 interface Signal { label: string; value: string; note: string }
 interface Flagged { sentence: string; score: number; reason: string }
@@ -40,7 +37,7 @@ interface DocResult {
   out_path: string; changed: number; total: number; engine: string; passes: number;
   warnings: string[]; before_score: number; after_score: number;
 }
-interface AppInfo { name: string; version: string; developer: string; company: string; website: string; os: string; arch: string }
+interface AppInfo { name: string; version: string; developer: string; company: string; website: string; downloads: string; os: string; arch: string }
 interface Progress { id: string; done: number; total: number; stage: string }
 
 // ---------------------------------------------------------------------------
@@ -84,7 +81,6 @@ let settings: Settings = {
   default_style: "natural",
   default_intensity: "balanced",
   ai_judge_enabled: true,
-  auto_update: true,
 };
 
 async function loadSettings() {
@@ -93,7 +89,6 @@ async function loadSettings() {
   $<HTMLSelectElement>("model").value = settings.model;
   $<HTMLSelectElement>("effort").value = settings.effort;
   $<HTMLInputElement>("ai-judge").checked = settings.ai_judge_enabled;
-  $<HTMLInputElement>("auto-update").checked = settings.auto_update;
   $<HTMLSelectElement>("style").value = settings.default_style;
   $<HTMLSelectElement>("intensity").value = settings.default_intensity;
   $<HTMLSelectElement>("doc-style").value = settings.default_style;
@@ -115,7 +110,6 @@ $("btn-save-settings").addEventListener("click", async () => {
     model: $<HTMLSelectElement>("model").value,
     effort: $<HTMLSelectElement>("effort").value,
     ai_judge_enabled: $<HTMLInputElement>("ai-judge").checked,
-    auto_update: $<HTMLInputElement>("auto-update").checked,
     default_style: $<HTMLSelectElement>("style").value,
     default_intensity: $<HTMLSelectElement>("intensity").value,
   };
@@ -499,10 +493,12 @@ listen<Progress>("humanize-progress", (ev) => {
 });
 
 // ---------------------------------------------------------------------------
-// About + updater
+// About + downloads
 // ---------------------------------------------------------------------------
+let downloadsUrl = "https://github.com/00Arun/humanizer/tree/main/releases";
 async function loadAbout() {
   const info = await invoke<AppInfo>("app_info");
+  downloadsUrl = info.downloads;
   $("about-version").textContent = `v${info.version}`;
   $("sidebar-version").textContent = `v${info.version}`;
   $("about-platform").textContent = `${info.os} · ${info.arch}`;
@@ -512,51 +508,9 @@ $("link-website").addEventListener("click", (e) => {
   e.preventDefault();
   openUrl("https://arun-pandey.com.np/");
 });
-
-let updating = false;
-async function checkForUpdates(silent: boolean, statusEl?: HTMLElement) {
-  if (updating) return;
-  const set = (t: string) => { if (statusEl) statusEl.textContent = t; };
-  set("Checking…");
-  try {
-    const update = await check();
-    if (!update) {
-      set("You're on the latest version.");
-      if (!silent) toast("You're on the latest version.", "ok");
-      return;
-    }
-    updating = true;
-    set(`Downloading v${update.version}…`);
-    const t = toast(`Updating to v${update.version}…`, "", 0);
-    const bar = document.createElement("div");
-    bar.className = "bar";
-    bar.innerHTML = `<div class="fill indeterminate"></div>`;
-    t.appendChild(bar);
-    let total = 0, got = 0;
-    await update.downloadAndInstall((ev) => {
-      if (ev.event === "Started") total = ev.data.contentLength || 0;
-      if (ev.event === "Progress") {
-        got += ev.data.chunkLength;
-        if (total) {
-          const f = bar.firstElementChild as HTMLElement;
-          f.classList.remove("indeterminate");
-          f.style.width = `${Math.round((got / total) * 100)}%`;
-        }
-      }
-      if (ev.event === "Finished") set("Installing…");
-    });
-    t.textContent = `Update v${update.version} installed. Restarting…`;
-    set("Installed. Restarting…");
-    setTimeout(() => relaunch(), 1500);
-  } catch (e) {
-    updating = false;
-    const m = errMsg(e);
-    set(`Update check failed: ${m}`);
-    if (!silent) toast(`Update check failed: ${m}`, "err", 6000);
-  }
+for (const id of ["btn-downloads", "btn-about-downloads"]) {
+  $(id).addEventListener("click", () => openUrl(downloadsUrl).catch((e) => toast(errMsg(e), "err")));
 }
-$("btn-check-update").addEventListener("click", () => checkForUpdates(false, $("update-status")));
-$("btn-about-update").addEventListener("click", () => checkForUpdates(false, $("about-update-status")));
 
 // ---------------------------------------------------------------------------
 // Boot
@@ -570,5 +524,4 @@ $("btn-about-update").addEventListener("click", () => checkForUpdates(false, $("
   }
   updateCounts();
   renderDocs();
-  if (settings.auto_update) setTimeout(() => checkForUpdates(true), 2500);
 })();

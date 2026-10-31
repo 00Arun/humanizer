@@ -15,7 +15,7 @@ Built in Rust with [Tauri 2](https://v2.tauri.app). No third-party humanizer or 
 | Detection suite | 5 offline statistical engines + an optional model-based **AI Judge**, combined into one 0-100 machine-likeness score with per-sentence flags and in-context highlights |
 | Rewrite engine | Claude **Fable 5.1** (default; Opus 5.5 / Sonnet 5.5 selectable) via your own Anthropic API key, with our prompt, paragraph-chunked and run in parallel. Strong mode runs a second pass guided by our own detector's flags. |
 | Offline fallback | With no API key, a rule engine still removes machine idioms, adds contractions, softens em-dashes and varies sentence rhythm |
-| Auto-update | Checks GitHub Releases on launch, downloads, verifies the minisign signature, installs and relaunches |
+| Updates | The latest installers always sit in [`releases/`](releases/). Run the new installer over the old version: NSIS and the macOS DMG upgrade in place. *Settings → Get latest version* opens that folder. |
 | Installers | macOS `.dmg` (custom background), Windows NSIS `-setup.exe` (branded header/sidebar, per-user install, license page) |
 
 ### Detection engines
@@ -59,27 +59,23 @@ cd src-tauri && cargo test --lib   # engine tests
 npm run tauri build      # installers in src-tauri/target/release/bundle/
 ```
 
-## Release & auto-update
+## Releasing a new version
 
-Installed copies poll `https://github.com/00Arun/humanizer-releases/releases/latest/download/latest.json` on launch. The code repo (`00Arun/humanizer`) is private; `humanizer-releases` is a public repo that holds only the installers, signatures and `latest.json`, mirrored there by CI.
+Only the **latest** installers are kept, in `releases/`:
 
-One-time setup:
-
-1. Code lives in the private repo `00Arun/humanizer`. Create a second, PUBLIC, empty repo `00Arun/humanizer-releases` (binaries only), and a fine-grained PAT with *Contents: read and write* on it → secret `RELEASES_REPO_TOKEN`.
-2. In **Settings → Secrets and variables → Actions** add:
-   - `TAURI_SIGNING_PRIVATE_KEY` = contents of `~/.tauri/humanizer.key` (generated on this machine; **back it up** — without it installed copies can never update again)
-   - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` = empty string (the key has no password)
-   - Optional Apple notarisation secrets (`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`) to remove the macOS Gatekeeper warning. Windows code-signing is optional too; unsigned installers show a SmartScreen prompt the first few hundred times.
-
-Each release:
+| File | Built by |
+|---|---|
+| `Humanizer_x.y.z_aarch64.dmg` (Apple Silicon) | your Mac, via the script below |
+| `Humanizer_x.y.z_x64.dmg` (Intel Mac) | GitHub Actions, after the tag is pushed |
+| `Humanizer_x.y.z_x64-setup.exe` (Windows) | GitHub Actions, after the tag is pushed |
 
 ```bash
-# bump the version in package.json, src-tauri/tauri.conf.json and src-tauri/Cargo.toml (keep them identical)
-git commit -am "v0.1.1"
-git tag v0.1.1 && git push && git push --tags
+./scripts/release.sh 0.1.1
 ```
 
-CI builds the three installers, signs the updater artifacts, creates the GitHub Release and uploads `latest.json`. Every installed copy picks the update up on its next launch (or via *Check for updates* in Settings / About).
+The script bumps the version in the three manifests, builds the DMG, replaces the old file in `releases/`, commits, tags `v0.1.1` and pushes. The workflow then builds the Windows and Intel-Mac installers on GitHub's runners and commits them into `releases/` on `main` (~10 min). No secrets or signing keys are involved.
+
+Users install by downloading the file for their platform and running it; an existing installation is upgraded in place. Unsigned builds show a one-time Gatekeeper (right-click → Open) or SmartScreen (*More info → Run anyway*) prompt.
 
 ## Settings & privacy
 

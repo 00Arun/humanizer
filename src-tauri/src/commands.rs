@@ -203,6 +203,8 @@ pub struct AppInfo {
     pub developer: String,
     pub company: String,
     pub website: String,
+    /// Where the latest installers live.
+    pub downloads: String,
     pub os: String,
     pub arch: String,
 }
@@ -215,6 +217,7 @@ pub fn app_info(app: AppHandle) -> AppInfo {
         developer: "Arun Pandey".into(),
         company: "Arun AI Studio".into(),
         website: "https://arun-pandey.com.np/".into(),
+        downloads: "https://github.com/00Arun/humanizer/tree/main/releases".into(),
         os: std::env::consts::OS.into(),
         arch: std::env::consts::ARCH.into(),
     }

@@ -20,8 +20,6 @@ pub struct Settings {
     pub default_intensity: String,
     /// Run the model-based "AI Judge" alongside the five local detectors.
     pub ai_judge_enabled: bool,
-    /// Check GitHub releases on launch and install silently.
-    pub auto_update: bool,
 }
 
 impl Default for Settings {
@@ -33,7 +31,6 @@ impl Default for Settings {
             default_style: "natural".to_string(),
             default_intensity: "balanced".to_string(),
             ai_judge_enabled: true,
-            auto_update: true,
         }
     }
 }
