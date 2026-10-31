@@ -134,3 +134,50 @@ fn local_model_pipeline_lowers_score() {
         }
     }
 }
+
+/// The in-app downloader: cancel part-way, then resume to completion.
+/// Uses a 19 MB public GGUF so the test stays quick.
+#[test]
+fn model_download_cancels_and_resumes() {
+    use crate::humanizer::local_llm::{download, Downloader, DownloadProgress};
+    use std::sync::{atomic::Ordering, Arc, Mutex};
+    const URL: &str = "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories15M-q4_0.gguf";
+    const SIZE: u64 = 19_077_344;
+    let dir = std::env::temp_dir().join(format!("humanizer-dl-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let dest = dir.join("tiny.gguf");
+    let http = reqwest::Client::new();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    // Pass 1: cancel once ~2 MB have arrived.
+    let dl = Arc::new(Downloader::default());
+    let dl2 = dl.clone();
+    let r1 = rt.block_on(download(http.clone(), "light", URL, &dest, dl.clone(), move |p: DownloadProgress| {
+        if !p.done && p.downloaded > 2_000_000 {
+            dl2.cancel.store(true, Ordering::SeqCst);
+        }
+    }));
+    assert!(r1.is_err(), "first pass should have been cancelled");
+    let part = dest.with_extension("gguf.part");
+    let have = part.metadata().map(|m| m.len()).unwrap_or(0);
+    println!("cancelled with {have} bytes in {}", part.display());
+    assert!(have > 1_000_000 && have < SIZE, "partial file expected, got {have}");
+    assert!(!dest.exists());
+
+    // Pass 2: resume to completion; the first progress report must start past the partial size.
+    let first = Arc::new(Mutex::new(None::<u64>));
+    let f2 = first.clone();
+    let r2 = rt.block_on(download(http, "light", URL, &dest, dl.clone(), move |p: DownloadProgress| {
+        if !p.done {
+            f2.lock().unwrap().get_or_insert(p.downloaded);
+        }
+    }));
+    assert!(r2.is_ok(), "resume failed: {r2:?}");
+    assert_eq!(dest.metadata().unwrap().len(), SIZE);
+    assert!(!part.exists());
+    if let Some(f) = *first.lock().unwrap() {
+        assert!(f >= have, "resume did not continue from the partial file ({f} < {have})");
+    }
+    assert!(!dl.active.load(Ordering::SeqCst));
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -165,6 +165,7 @@ async function refreshModelStatus() {
   $("model-progress").hidden = !dlTier;
   $("btn-model-test").hidden = !m.installed;
   $("btn-model-custom").hidden = !!dlTier;
+  renderSetupBar();
 
   const chosen = settings.local_model_tier;
   $("model-tiers").innerHTML = m.tiers
@@ -234,13 +235,49 @@ async function startDownload(tier: string | null) {
   }
 }
 
+/// Whether the app wants a local model and has none yet.
+function needsModel(): boolean {
+  if (!modelStatus || modelStatus.installed) return false;
+  if (settings.engine_mode === "rules" || settings.engine_mode === "api") return false;
+  if (settings.engine_mode === "auto" && settings.anthropic_api_key) return false;
+  return true;
+}
+
+/// The setup bar at the top: visible while a model is downloading, or when
+/// one is needed and the download is paused.
+function renderSetupBar() {
+  const bar = $("setup-bar");
+  if (!modelStatus || (!modelStatus.downloading_tier && !needsModel())) {
+    bar.hidden = true;
+    return;
+  }
+  bar.hidden = false;
+  const dl = modelStatus.downloading_tier;
+  const tier = modelStatus.tiers.find((t) => t.tier === (dl || modelStatus!.recommended_tier));
+  const name = tier ? tier.label : "offline AI model";
+  if (dl) {
+    $("setup-title").textContent = `Setting up ${name} (${tier ? fmtGB(tier.size_bytes) : ""})…`;
+    $("setup-sub").textContent = "You can start humanizing right away; the app switches to the AI model automatically when it is ready. Closing the app pauses the download; it resumes next launch.";
+    $("setup-pause").hidden = false;
+    $("setup-resume").hidden = true;
+  } else {
+    $("setup-title").textContent = `Offline AI model not installed yet (${name}${tier ? `, ${fmtGB(tier.size_bytes)}` : ""})`;
+    $("setup-sub").textContent = "Rewrites use the rule engine until the model is downloaded.";
+    $("setup-pause").hidden = true;
+    $("setup-resume").hidden = false;
+    $("setup-pct").textContent = "";
+    $("setup-fill").classList.add("indeterminate");
+    $("setup-fill").style.width = "";
+  }
+}
+$("setup-pause").addEventListener("click", () => invoke("cancel_model_download"));
+$("setup-resume").addEventListener("click", () => startDownload(null));
+
 /// First launch: fetch the recommended model without asking, unless the
 /// user turned that off, already has an API key, or chose rules only.
+/// Re-running on every launch is what makes an interrupted download resume.
 async function maybeAutoDownload() {
-  if (!modelStatus || modelStatus.installed || modelStatus.downloading_tier) return;
-  if (!settings.auto_download_model || settings.anthropic_api_key || settings.engine_mode === "rules" || settings.engine_mode === "api") return;
-  const rec = modelStatus.tiers.find((t) => t.tier === modelStatus!.recommended_tier);
-  toast(`Setting up the offline AI model (${rec ? fmtGB(rec.size_bytes) : "one-time download"}). You can keep working; progress shows in the sidebar.`, "", 8000);
+  if (!needsModel() || modelStatus!.downloading_tier || !settings.auto_download_model) return;
   await startDownload(null);
 }
 
@@ -291,6 +328,11 @@ listen<DownloadProgress>("model-download", (ev) => {
   downloadPct = p.total ? pct : null;
   fill.style.width = `${pct}%`;
   label.textContent = p.total ? `${p.tier} model · ${fmtGB(p.downloaded)} / ${fmtGB(p.total)} · ${pct}%` : fmtGB(p.downloaded);
+  // Mirror onto the first-launch setup bar.
+  const sf = $("setup-fill");
+  sf.classList.remove("indeterminate");
+  sf.style.width = `${pct}%`;
+  $("setup-pct").textContent = p.total ? `${fmtGB(p.downloaded)} / ${fmtGB(p.total)} · ${pct}%` : fmtGB(p.downloaded);
   if (!modelStatus?.downloading_tier) refreshModelStatus();
   else refreshEnginePill();
 });

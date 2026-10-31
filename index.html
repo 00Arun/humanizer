@@ -37,6 +37,18 @@
       </aside>
 
       <main class="main">
+        <!-- First-launch setup bar: shown while the offline model is being fetched -->
+        <div class="setup-bar" id="setup-bar" hidden>
+          <div class="setup-text">
+            <strong id="setup-title">Setting up the offline AI model…</strong>
+            <span class="muted" id="setup-sub">You can start humanizing right away; the app switches to the AI model automatically when it is ready.</span>
+          </div>
+          <div class="bar"><div class="fill indeterminate" id="setup-fill"></div></div>
+          <span class="setup-pct" id="setup-pct"></span>
+          <button class="btn ghost sm" id="setup-pause">Pause</button>
+          <button class="btn sm" id="setup-resume" hidden>Resume download</button>
+        </div>
+
         <!-- ============ HUMANIZE ============ -->
         <section class="view active" id="view-humanize">
           <header class="view-head">
