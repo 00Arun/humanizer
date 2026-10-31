@@ -45,16 +45,59 @@ fn api_client(state: &AppState, s: &Settings) -> Option<Arc<ClaudeClient>> {
     Some(Arc::new(ClaudeClient { http: state.http.clone(), api_key: s.anthropic_api_key.clone(), model: s.model.clone(), effort: s.effort.clone() }))
 }
 
-/// Where the GGUF lives: a custom path from Settings or the default download spot.
+fn models_dir(app: &AppHandle) -> PathBuf {
+    app.path().app_data_dir().unwrap_or_else(|_| std::env::temp_dir()).join("models")
+}
+
+/// Where a tier's download goes.
+fn download_target(app: &AppHandle, tier: &str) -> PathBuf {
+    let file = local_llm::spec(tier).map(|m| m.file).unwrap_or(local_llm::DEFAULT_MODEL_FILE);
+    models_dir(app).join(file)
+}
+
+/// A model shipped inside the installer ("full" build), strongest first.
+fn bundled_model(app: &AppHandle) -> Option<PathBuf> {
+    let dir = app.path().resource_dir().ok()?.join("models");
+    local_llm::CATALOG.iter().map(|m| dir.join(m.file)).find(|p| p.is_file())
+}
+
+/// The tier that will be used: the chosen one, or in auto mode the strongest
+/// installed tier, or (nothing installed) the strongest the RAM allows.
+fn active_tier(app: &AppHandle, s: &Settings) -> &'static str {
+    if s.local_model_tier != "auto" {
+        if let Some(m) = local_llm::spec(&s.local_model_tier) {
+            return m.tier;
+        }
+    }
+    if let Some(m) = local_llm::CATALOG.iter().find(|m| download_target(app, m.tier).is_file()) {
+        return m.tier;
+    }
+    local_llm::recommended_tier(local_llm::total_ram_gb())
+}
+
+/// Where the GGUF lives, in priority order: custom path from Settings,
+/// a model bundled with the app, then the active tier's downloaded copy.
+/// When none exists yet, returns the download target so callers can create it.
 fn model_path(app: &AppHandle, s: &Settings) -> PathBuf {
     if !s.local_model_path.is_empty() {
         return PathBuf::from(&s.local_model_path);
     }
-    app.path()
-        .app_data_dir()
-        .unwrap_or_else(|_| std::env::temp_dir())
-        .join("models")
-        .join(local_llm::DEFAULT_MODEL_FILE)
+    if let Some(b) = bundled_model(app) {
+        return b;
+    }
+    download_target(app, active_tier(app, s))
+}
+
+fn model_source(app: &AppHandle, s: &Settings, path: &std::path::Path) -> &'static str {
+    if !s.local_model_path.is_empty() {
+        "custom"
+    } else if bundled_model(app).as_deref() == Some(path) {
+        "bundled"
+    } else if path.is_file() {
+        "downloaded"
+    } else {
+        "none"
+    }
 }
 
 /// Loads (or reuses) the offline model. Returns None when no file exists.
@@ -290,45 +333,97 @@ pub async fn local_model_status(app: AppHandle, state: State<'_, AppState>) -> R
     let path = model_path(&app, &s);
     let meta = std::fs::metadata(&path).ok();
     let loaded = state.local_llm.lock().await.as_ref().map_or(false, |l| l.path == path);
+    let ram = local_llm::total_ram_gb();
+    let downloading_tier = {
+        let t = state.downloader.tier.lock().unwrap();
+        if state.downloader.active.load(std::sync::atomic::Ordering::SeqCst) && !t.is_empty() { Some(t.clone()) } else { None }
+    };
+    let tiers = local_llm::CATALOG
+        .iter()
+        .map(|m| {
+            let p = download_target(&app, m.tier);
+            local_llm::TierStatus {
+                tier: m.tier.into(),
+                label: m.label.into(),
+                file: m.file.into(),
+                size_bytes: m.size_bytes,
+                min_ram_gb: m.min_ram_gb,
+                notes: m.notes.into(),
+                installed: p.is_file(),
+                path: p.to_string_lossy().to_string(),
+                fits: ram >= m.min_ram_gb,
+            }
+        })
+        .collect();
     Ok(ModelStatus {
+        source: model_source(&app, &s, &path).to_string(),
+        active_tier: local_llm::spec_for_file(&path).map(|m| m.tier.to_string()).unwrap_or_else(|| "custom".into()),
         installed: meta.as_ref().map_or(false, |m| m.is_file()),
-        name: path.file_stem().and_then(|n| n.to_str()).unwrap_or("").to_string(),
+        name: local_llm::spec_for_file(&path)
+            .map(|m| m.label.to_string())
+            .unwrap_or_else(|| path.file_stem().and_then(|n| n.to_str()).unwrap_or("").to_string()),
         path: path.to_string_lossy().to_string(),
         size_bytes: meta.map_or(0, |m| m.len()),
         loaded,
-        downloading: state.downloader.active.load(std::sync::atomic::Ordering::SeqCst),
+        downloading_tier,
         accelerator: LocalLlm::accelerator().to_string(),
-        default_label: local_llm::DEFAULT_MODEL_LABEL.to_string(),
-        default_size_bytes: 2_497_281_120,
+        total_ram_gb: ram,
+        recommended_tier: local_llm::recommended_tier(ram).to_string(),
+        tiers,
     })
 }
 
-/// Starts the download in the background; progress arrives as
-/// `model-download` events. Returns immediately.
+/// Starts a tier download in the background (default: the recommended tier);
+/// progress arrives as `model-download` events. Returns immediately.
 #[tauri::command]
-pub async fn download_local_model(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn download_local_model(app: AppHandle, state: State<'_, AppState>, tier: Option<String>) -> Result<String, String> {
     let mut s = settings_of(&state);
-    // A download always targets the default location; clear any custom path.
+    let tier = tier.unwrap_or_else(|| local_llm::recommended_tier(local_llm::total_ram_gb()).to_string());
+    let spec = local_llm::spec(&tier).ok_or("Unknown model tier.")?;
+    // A download switches the engine to that tier and drops any custom path.
+    let mut changed = false;
     if !s.local_model_path.is_empty() {
         s.local_model_path.clear();
+        changed = true;
+    }
+    if s.local_model_tier != "auto" && s.local_model_tier != tier {
+        s.local_model_tier = tier.clone();
+        changed = true;
+    }
+    if changed {
         s.save(&app)?;
         *state.settings.lock().unwrap() = s.clone();
     }
-    let dest = model_path(&app, &s);
+    let dest = download_target(&app, &tier);
     if dest.is_file() {
-        return Err("The model is already installed.".into());
+        return Err("That model is already installed.".into());
     }
     let http = state.http.clone();
     let dl = state.downloader.clone();
     let app2 = app.clone();
+    let url = spec.url;
+    let tier2 = tier.clone();
     tauri::async_runtime::spawn(async move {
         let emitter = app2.clone();
-        let _ = local_llm::download(http, local_llm::DEFAULT_MODEL_URL, &dest, dl, move |p: DownloadProgress| {
+        let _ = local_llm::download(http, &tier2, url, &dest, dl, move |p: DownloadProgress| {
             let _ = emitter.emit("model-download", p);
         })
         .await;
     });
-    Ok(())
+    Ok(tier)
+}
+
+/// Switches which installed tier the engine uses ("auto" lets the app pick).
+#[tauri::command]
+pub async fn select_model_tier(app: AppHandle, state: State<'_, AppState>, tier: String) -> Result<ModelStatus, String> {
+    let mut s = settings_of(&state);
+    s.local_model_tier = tier;
+    s.local_model_path.clear();
+    s.normalize();
+    s.save(&app)?;
+    *state.settings.lock().unwrap() = s;
+    *state.local_llm.lock().await = None;
+    local_model_status(app, state).await
 }
 
 #[tauri::command]
@@ -337,10 +432,20 @@ pub fn cancel_model_download(state: State<'_, AppState>) {
 }
 
 #[tauri::command]
-pub async fn delete_local_model(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn delete_local_model(app: AppHandle, state: State<'_, AppState>, tier: Option<String>) -> Result<(), String> {
     let s = settings_of(&state);
-    let path = model_path(&app, &s);
-    *state.local_llm.lock().await = None;
+    let path = match tier {
+        Some(t) => download_target(&app, &t),
+        None => model_path(&app, &s),
+    };
+    if model_source(&app, &s, &path) == "bundled" {
+        return Err("This model is part of the app bundle and cannot be removed separately.".into());
+    }
+    let mut slot = state.local_llm.lock().await;
+    if slot.as_ref().map_or(false, |l| l.path == path) {
+        *slot = None;
+    }
+    drop(slot);
     if path.is_file() {
         std::fs::remove_file(&path).map_err(|e| e.to_string())?;
     }

@@ -87,4 +87,14 @@ See `LICENSE`. © 2026 Arun Pandey, Arun AI Studio.
 
 ## Offline AI model
 
-Settings → *Offline AI model* → **Download**. The file goes to the app data folder (`~/Library/Application Support/com.arunaistudio.humanizer/models/` on macOS, `%APPDATA%\com.arunaistudio.humanizer\models\` on Windows); downloads resume if interrupted. Any other `.gguf` instruct model can be selected with *Use my own .gguf…*. Building from source needs `cmake` (`brew install cmake` on macOS; present on GitHub's runners and in Visual Studio Build Tools).
+Humanizer ships small and fetches its language model on first launch (no click needed; turn off in Settings). Three tiers; the app recommends the strongest your RAM allows and you can switch any time:
+
+| Tier | Model | Size | RAM |
+|---|---|---|---|
+| best | Gemma 3 12B (QAT, Q4_K_M) | 7.3 GB | 16 GB |
+| balanced | Qwen3 8B (Q4_K_M, thinking off) | 5.0 GB | 12 GB |
+| light | Qwen3 4B Instruct 2507 (Q4_K_M) | 2.5 GB | 8 GB |
+
+Files live in the app data folder (`~/Library/Application Support/com.arunaistudio.humanizer/models/` on macOS, `%APPDATA%\com.arunaistudio.humanizer\models\` on Windows); downloads resume if interrupted. Any other `.gguf` instruct model works via *Use my own .gguf…*. Every local rewrite is gated by the detector suite: 1–3 candidates are drawn (Light/Balanced/Strong), the most human-scoring one wins, and the original is kept if none beats it.
+
+**Full offline installer.** `./scripts/build-full.sh` produces a macOS DMG with the best model baked in (~7.5 GB) in `releases-full/`. It is too large for GitHub (100 MB repo / 2 GB release limits), so host it on your own site or Drive. Building from source needs `cmake` (`brew install cmake`; present on GitHub runners and in Visual Studio Build Tools).

@@ -6,3 +6,5 @@ src-tauri/gen/schemas
 *.key.pub
 .DS_Store
 .env
+src-tauri/models/
+releases-full/

@@ -25,6 +25,11 @@ pub struct Settings {
     pub engine_mode: String,
     /// Custom GGUF path; empty means the default download location.
     pub local_model_path: String,
+    /// Fetch the offline model by itself on first launch (no click needed).
+    pub auto_download_model: bool,
+    /// auto | best | balanced | light. Auto = strongest installed tier, or
+    /// the strongest the machine's RAM allows when nothing is installed yet.
+    pub local_model_tier: String,
 }
 
 impl Default for Settings {
@@ -38,6 +43,8 @@ impl Default for Settings {
             ai_judge_enabled: true,
             engine_mode: "auto".to_string(),
             local_model_path: String::new(),
+            auto_download_model: true,
+            local_model_tier: "auto".to_string(),
         }
     }
 }
@@ -86,6 +93,9 @@ impl Settings {
             self.engine_mode = "auto".to_string();
         }
         self.local_model_path = self.local_model_path.trim().to_string();
+        if !["auto", "best", "balanced", "light"].contains(&self.local_model_tier.as_str()) {
+            self.local_model_tier = "auto".to_string();
+        }
     }
 
     pub fn has_api_key(&self) -> bool {

@@ -191,20 +191,20 @@
 
           <div class="card">
             <h2>Offline AI model <span class="hint">· no API key, no internet after download</span></h2>
-            <p class="hint">A compact open-weight language model (Qwen3 4B) runs inside Humanizer and does real rewriting on your own computer. One-time download of about 2.5 GB. Uses the Apple GPU on Macs and all CPU cores on Windows.</p>
+            <p class="hint">An open-weight language model runs inside Humanizer and does the rewriting on your own computer: Apple GPU on Macs, all CPU cores on Windows. Pick the strongest tier your RAM allows; the app picks it for you and downloads it on first launch.</p>
             <div class="row" style="margin-top:12px; flex-wrap:wrap">
               <span id="model-status" class="hint">Checking…</span>
             </div>
             <div class="progress" id="model-progress" hidden style="margin-top:10px">
               <div class="bar"><div class="fill" id="model-progress-fill"></div></div>
               <span id="model-progress-label">Downloading…</span>
+              <button class="btn ghost sm" id="btn-model-cancel">Cancel</button>
             </div>
+            <div class="tiers" id="model-tiers"></div>
             <div class="row" style="margin-top:12px; flex-wrap:wrap">
-              <button class="btn primary" id="btn-model-download">Download model (2.5 GB)</button>
-              <button class="btn ghost" id="btn-model-cancel" hidden>Cancel</button>
+              <label class="toggle" style="flex:1"><input type="checkbox" id="auto-download" /> <span>Download the recommended model automatically on first launch</span></label>
               <button class="btn ghost" id="btn-model-test" hidden>Test model</button>
               <button class="btn ghost" id="btn-model-custom">Use my own .gguf…</button>
-              <button class="btn ghost danger" id="btn-model-delete" hidden>Remove</button>
             </div>
             <div class="hint" id="model-test-result" style="margin-top:8px"></div>
           </div>

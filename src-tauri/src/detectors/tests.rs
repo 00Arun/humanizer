@@ -102,41 +102,35 @@ fn offline_humanizer_changes_plain_essay_too() {
     assert!(out.contains("Everest") && out.contains("Nepal"));
 }
 
-/// Runs only when the default offline model has been downloaded: the full
-/// local pipeline (prompt, validation, detector gate, polish) on the essay.
+/// Runs the full local pipeline (prompt, validation, detector gate, best-of-N,
+/// polish) on every catalog model that is present on this machine.
 #[test]
 fn local_model_pipeline_lowers_score() {
+    use crate::humanizer::{humanize_paragraphs, local_llm, Engine, HumanizeOptions};
     let home = std::env::var("HOME").unwrap_or_default();
-    let path = std::path::PathBuf::from(home)
-        .join("Library/Application Support/com.arunaistudio.humanizer/models")
-        .join(crate::humanizer::local_llm::DEFAULT_MODEL_FILE);
-    if !path.is_file() {
-        eprintln!("skipping: model not present at {}", path.display());
+    let dir = std::path::PathBuf::from(home).join("Library/Application Support/com.arunaistudio.humanizer/models");
+    let present: Vec<&local_llm::ModelSpec> = local_llm::CATALOG.iter().filter(|m| dir.join(m.file).is_file()).collect();
+    if present.is_empty() {
+        eprintln!("skipping: no catalog model under {}", dir.display());
         return;
     }
-    use crate::humanizer::{humanize_paragraphs, Engine, HumanizeOptions};
-    let llm = std::sync::Arc::new(crate::humanizer::local_llm::LocalLlm::load(&path).expect("load model"));
     let rt = tokio::runtime::Runtime::new().unwrap();
-    for intensity in ["balanced", "strong"] {
-        let opts = HumanizeOptions { style: "natural".into(), intensity: intensity.into() };
-        let t0 = std::time::Instant::now();
-        let progress: crate::humanizer::ProgressFn = std::sync::Arc::new(|_, _, _| {});
-        let out = rt.block_on(humanize_paragraphs(Engine::Local(llm.clone()), vec![ESSAY.to_string()], &opts, progress));
-        let text = out.paragraphs.join("\n\n");
-        let before = detect_local(ESSAY).overall;
-        let after = detect_local(&text).overall;
-        println!("[{intensity}] {:.1}s, engine {}, passes {}, warnings {:?}\n{text}\nscore {before} -> {after}\n", t0.elapsed().as_secs_f64(), out.engine, out.passes, out.warnings);
-        assert!(text.contains("Everest") && text.contains("Nepal"), "lost a fact");
-        assert!(after <= before + 2.0, "[{intensity}] got worse: {before} -> {after}");
+    for spec in present {
+        let llm = std::sync::Arc::new(local_llm::LocalLlm::load(&dir.join(spec.file)).expect("load model"));
+        println!("===== {} =====", spec.label);
+        for (sample, name, min_drop) in [(ESSAY, "essay", 0.0), (AI_TEXT, "ai-sample", 15.0)] {
+            let opts = HumanizeOptions { style: "natural".into(), intensity: "balanced".into() };
+            let progress: crate::humanizer::ProgressFn = std::sync::Arc::new(|_, _, _| {});
+            let t0 = std::time::Instant::now();
+            let out = rt.block_on(humanize_paragraphs(Engine::Local(llm.clone()), crate::text::paragraphs(sample), &opts, progress));
+            let text = out.paragraphs.join("\n\n");
+            let before = detect_local(sample).overall;
+            let after = detect_local(&text).overall;
+            println!("[{name}] {:.1}s engine {} passes {} warnings {:?}\n{text}\nscore {before} -> {after}\n", t0.elapsed().as_secs_f64(), out.engine, out.passes, out.warnings);
+            if name == "essay" {
+                assert!(text.contains("Everest") && text.contains("Nepal"), "lost a fact");
+            }
+            assert!(after <= before - min_drop, "[{}/{name}] expected a drop of {min_drop}+: {before} -> {after}", spec.tier);
+        }
     }
-    // The heavily machine-written sample must drop clearly.
-    let opts = HumanizeOptions { style: "natural".into(), intensity: "balanced".into() };
-    let progress: crate::humanizer::ProgressFn = std::sync::Arc::new(|_, _, _| {});
-    let t0 = std::time::Instant::now();
-    let out = rt.block_on(humanize_paragraphs(Engine::Local(llm.clone()), crate::text::paragraphs(AI_TEXT), &opts, progress));
-    let text = out.paragraphs.join("\n\n");
-    let before = detect_local(AI_TEXT).overall;
-    let after = detect_local(&text).overall;
-    println!("[ai-sample] {:.1}s warnings {:?}\n{text}\nscore {before} -> {after}", t0.elapsed().as_secs_f64(), out.warnings);
-    assert!(after < before - 15.0, "AI sample should drop by 15+: {before} -> {after}");
 }

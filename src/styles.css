@@ -170,6 +170,18 @@ details summary { cursor: pointer; font-size: 12px; color: var(--accent); }
 .toggle { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; line-height: 1.5; }
 .toggle input { margin-top: 4px; }
 
+/* Model tiers */
+.tiers { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.tier { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: color-mix(in srgb, var(--bg-elev) 80%, var(--bg-sunk)); }
+.tier.active { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent); }
+.tier.nofit { opacity: 0.6; }
+.tier-name { font-weight: 600; }
+.tier-meta { font-size: 12px; color: var(--fg-muted); margin-top: 2px; }
+.tier-actions { display: flex; gap: 6px; align-items: center; }
+.badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--bg-sunk); color: var(--fg-muted); }
+.badge.ok { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+.badge.rec { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+
 /* About */
 .about { max-width: 620px; margin: 30px auto; text-align: center; display: flex; flex-direction: column; gap: 16px; align-items: center; }
 .about-icon { width: 112px; height: 112px; border-radius: 26px; box-shadow: var(--shadow); }

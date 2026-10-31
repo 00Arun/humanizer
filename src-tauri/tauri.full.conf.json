@@ -1,0 +1,8 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "models/gemma-3-12b-it-qat-Q4_K_M.gguf": "models/gemma-3-12b-it-qat-Q4_K_M.gguf"
+    }
+  }
+}

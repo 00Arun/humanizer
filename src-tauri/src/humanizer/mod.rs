@@ -143,7 +143,13 @@ async fn local_ai(llm: Arc<LocalLlm>, paragraphs: Vec<String>, opts: &HumanizeOp
     let mut warnings = Vec::new();
     let mut current = paragraphs.clone();
 
-    let (out, failed) = local_pass(&llm, &system, &current, None, progress.clone(), "Rewriting with local AI").await;
+    // How many candidates to draw per paragraph; the detectors pick the winner.
+    let candidates = match opts.intensity.as_str() {
+        "light" => 1,
+        "strong" => 3,
+        _ => 2,
+    };
+    let (out, failed) = local_pass(&llm, &system, &current, None, candidates, progress.clone(), "Rewriting with local AI").await;
     current = out;
     if failed > 0 {
         warnings.push(format!("{failed} paragraph(s) kept their original wording because the local model's rewrite failed validation."));
@@ -164,7 +170,7 @@ async fn local_ai(llm: Arc<LocalLlm>, paragraphs: Vec<String>, opts: &HumanizeOp
                 .collect();
             if !targets.is_empty() {
                 let feedback = "Second pass: the previous version still read machine-like (uniform sentence lengths, stock phrasing). Rewrite again with more varied rhythm and plainer wording.";
-                let (refined, _) = local_pass_subset(&llm, &system, &current, &targets, Some(feedback), progress.clone(), "Refining with local AI").await;
+                let (refined, _) = local_pass_subset(&llm, &system, &current, &targets, Some(feedback), candidates, progress.clone(), "Refining with local AI").await;
                 current = refined;
                 passes += 1;
             }
@@ -179,12 +185,13 @@ async fn local_ai(llm: Arc<LocalLlm>, paragraphs: Vec<String>, opts: &HumanizeOp
     HumanizeOutcome { paragraphs: out, engine: format!("local-ai ({})", llm.name), passes, warnings }
 }
 
-async fn local_pass(llm: &Arc<LocalLlm>, system: &str, paragraphs: &[String], feedback: Option<&str>, progress: ProgressFn, stage: &str) -> (Vec<String>, usize) {
+async fn local_pass(llm: &Arc<LocalLlm>, system: &str, paragraphs: &[String], feedback: Option<&str>, candidates: usize, progress: ProgressFn, stage: &str) -> (Vec<String>, usize) {
     let targets: Vec<usize> = paragraphs.iter().enumerate().filter(|(_, p)| eligible(p)).map(|(i, _)| i).collect();
-    local_pass_subset(llm, system, paragraphs, &targets, feedback, progress, stage).await
+    local_pass_subset(llm, system, paragraphs, &targets, feedback, candidates, progress, stage).await
 }
 
-async fn local_pass_subset(llm: &Arc<LocalLlm>, system: &str, paragraphs: &[String], targets: &[usize], feedback: Option<&str>, progress: ProgressFn, stage: &str) -> (Vec<String>, usize) {
+#[allow(clippy::too_many_arguments)]
+async fn local_pass_subset(llm: &Arc<LocalLlm>, system: &str, paragraphs: &[String], targets: &[usize], feedback: Option<&str>, candidates: usize, progress: ProgressFn, stage: &str) -> (Vec<String>, usize) {
     let total = targets.len();
     let mut out = paragraphs.to_vec();
     let mut failed = 0;
@@ -197,7 +204,7 @@ async fn local_pass_subset(llm: &Arc<LocalLlm>, system: &str, paragraphs: &[Stri
         };
         let original = paragraphs[i].clone();
         let seed = 1000 + i as u32;
-        let rewritten = tokio::task::spawn_blocking(move || rewrite_one(&llm, &system, &original, seed)).await.ok().flatten();
+        let rewritten = tokio::task::spawn_blocking(move || rewrite_one(&llm, &system, &original, seed, candidates)).await.ok().flatten();
         match rewritten {
             Some(t) => out[i] = t,
             None => {
@@ -219,26 +226,34 @@ fn gate_score(p: &str) -> f64 {
 static QUOTE_WRAP_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"^\s*["“]([\s\S]*)["”]\s*$"#).unwrap());
 static LABEL_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?im)^\s*(?:rewritten(?: paragraph| text| version)?|revised(?: paragraph| text)?|output|answer|humanized(?: text)?)\s*:\s*").unwrap());
 
-/// One paragraph through the local model, gated by our own detectors: up to
-/// three attempts, keep the best one, and only if it reads at least as human
-/// as the input. Returns None when the model cannot beat the original.
-fn rewrite_one(llm: &LocalLlm, system: &str, original: &str, seed: u32) -> Option<String> {
+/// One paragraph through the local model, gated by our own detectors. Draws
+/// `candidates` versions (plus one corrective retry if they all read worse
+/// than the input), keeps the one our detectors score most human, and only
+/// returns it if it is at least as human as the input.
+fn rewrite_one(llm: &LocalLlm, system: &str, original: &str, seed: u32, candidates: usize) -> Option<String> {
     let words = text::word_count(original).max(1);
     let max_new = ((words as f64 * 2.4) as usize + 48).min(1400);
     let baseline = gate_score(original);
+    let temps = [0.7f32, 0.9, 0.6, 0.8];
     let mut best: Option<(f64, String)> = None;
-    let attempts: [(u32, f32, bool); 3] = [(0, 0.7, false), (1, 0.8, true), (2, 0.6, true)];
-    for (attempt, temp, hint) in attempts {
-        let sys = if hint { format!("{system}\n\n{LOCAL_RETRY_HINT}") } else { system.to_string() };
-        let Ok(raw) = llm.generate(&sys, original, max_new, temp, seed + attempt) else { continue };
-        let Some(t) = validate(&raw, original) else { continue };
-        let score = gate_score(&t);
-        if best.as_ref().map_or(true, |(s, _)| score < *s) {
-            best = Some((score, t));
+    let mut attempt = 0u32;
+    let mut planned = candidates.clamp(1, 3);
+    while (attempt as usize) < planned.min(4) {
+        let worse_so_far = best.as_ref().map_or(false, |(s, _)| *s > baseline);
+        let sys = if attempt > 0 && worse_so_far { format!("{system}\n\n{LOCAL_RETRY_HINT}") } else { system.to_string() };
+        let temp = temps[attempt as usize % temps.len()];
+        if let Ok(raw) = llm.generate(&sys, original, max_new, temp, seed + attempt) {
+            if let Some(t) = validate(&raw, original) {
+                let score = gate_score(&t);
+                if best.as_ref().map_or(true, |(s, _)| score < *s) {
+                    best = Some((score, t));
+                }
+            }
         }
-        // Good enough: clearly more human than the input.
-        if score + 8.0 <= baseline {
-            break;
+        attempt += 1;
+        // All planned candidates read worse than the input: one corrective retry.
+        if attempt as usize == planned && planned < 4 && best.as_ref().map_or(true, |(s, _)| *s > baseline + 2.0) {
+            planned += 1;
         }
     }
     match best {

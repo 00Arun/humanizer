@@ -16,12 +16,19 @@ interface Settings {
   ai_judge_enabled: boolean;
   engine_mode: string;
   local_model_path: string;
+  auto_download_model: boolean;
+  local_model_tier: string;
+}
+interface TierStatus {
+  tier: string; label: string; file: string; size_bytes: number; min_ram_gb: number; notes: string;
+  installed: boolean; path: string; fits: boolean;
 }
 interface ModelStatus {
-  installed: boolean; path: string; name: string; size_bytes: number; loaded: boolean;
-  downloading: boolean; accelerator: string; default_label: string; default_size_bytes: number;
+  source: string; active_tier: string; installed: boolean; path: string; name: string; size_bytes: number;
+  loaded: boolean; downloading_tier: string | null; accelerator: string; total_ram_gb: number;
+  recommended_tier: string; tiers: TierStatus[];
 }
-interface DownloadProgress { downloaded: number; total: number; done: boolean; error: string | null }
+interface DownloadProgress { tier: string; downloaded: number; total: number; done: boolean; error: string | null }
 interface Signal { label: string; value: string; note: string }
 interface Flagged { sentence: string; score: number; reason: string }
 interface EngineReport {
@@ -90,8 +97,11 @@ let settings: Settings = {
   ai_judge_enabled: true,
   engine_mode: "auto",
   local_model_path: "",
+  auto_download_model: true,
+  local_model_tier: "auto",
 };
 let modelStatus: ModelStatus | null = null;
+let downloadPct: number | null = null;
 
 async function loadSettings() {
   settings = await invoke<Settings>("get_settings");
@@ -100,6 +110,7 @@ async function loadSettings() {
   $<HTMLSelectElement>("effort").value = settings.effort;
   $<HTMLInputElement>("ai-judge").checked = settings.ai_judge_enabled;
   $<HTMLSelectElement>("engine-mode").value = settings.engine_mode;
+  $<HTMLInputElement>("auto-download").checked = settings.auto_download_model;
   $<HTMLSelectElement>("style").value = settings.default_style;
   $<HTMLSelectElement>("intensity").value = settings.default_intensity;
   $<HTMLSelectElement>("doc-style").value = settings.default_style;
@@ -111,14 +122,15 @@ async function loadSettings() {
 function activeEngineLabel(): string {
   const hasKey = !!settings.anthropic_api_key;
   const hasLocal = !!modelStatus?.installed;
+  const dl = modelStatus?.downloading_tier ? `downloading model${downloadPct !== null ? ` ${downloadPct}%` : "…"}` : "rules (no AI yet)";
   switch (settings.engine_mode) {
     case "api": return hasKey ? settings.model : "rules (no API key set)";
-    case "local": return hasLocal ? `Local AI · ${modelStatus!.name}` : "rules (model not installed)";
+    case "local": return hasLocal ? `Local AI · ${modelStatus!.name}` : dl;
     case "rules": return "rules only";
     default:
       if (hasKey) return settings.model;
       if (hasLocal) return `Local AI · ${modelStatus!.name}`;
-      return "rules (no AI yet)";
+      return dl;
   }
 }
 
@@ -142,44 +154,97 @@ async function refreshModelStatus() {
   }
   const m = modelStatus;
   const st = $("model-status");
+  const dlTier = m.downloading_tier;
   if (m.installed) {
-    st.innerHTML = `<b style="color:var(--ok)">Installed</b> · ${esc(m.name)} · ${fmtGB(m.size_bytes)} · runs on ${esc(m.accelerator)}${m.loaded ? " · loaded" : ""}<br><span class="hint">${esc(m.path)}</span>`;
-  } else if (m.downloading) {
-    st.textContent = "Downloading…";
+    st.innerHTML = `<b style="color:var(--ok)">Active:</b> ${esc(m.name)} · ${fmtGB(m.size_bytes)} · runs on ${esc(m.accelerator)}${m.loaded ? " · loaded" : ""} · this computer has ${m.total_ram_gb} GB RAM<br><span class="hint">${esc(m.path)}${m.source === "bundled" ? " (bundled with the app)" : ""}</span>`;
+  } else if (dlTier) {
+    st.textContent = `Downloading the ${dlTier} model… you can keep using the app; rules run until it arrives.`;
   } else {
-    st.innerHTML = `<b>Not installed.</b> Default: ${esc(m.default_label)} · one-time download, resumable.`;
+    st.innerHTML = `<b>No model yet.</b> This computer has ${m.total_ram_gb} GB RAM → recommended tier: <b>${esc(m.recommended_tier)}</b>.`;
   }
-  $("btn-model-download").hidden = m.installed || m.downloading;
-  $("btn-model-cancel").hidden = !m.downloading;
+  $("model-progress").hidden = !dlTier;
   $("btn-model-test").hidden = !m.installed;
-  $("btn-model-delete").hidden = !m.installed;
-  $("btn-model-custom").hidden = m.downloading;
-  $("model-progress").hidden = !m.downloading;
+  $("btn-model-custom").hidden = !!dlTier;
+
+  const chosen = settings.local_model_tier;
+  $("model-tiers").innerHTML = m.tiers
+    .map((t) => {
+      const isActive = m.installed && m.source !== "custom" && t.tier === m.active_tier;
+      const badges = [
+        t.tier === m.recommended_tier ? `<span class="badge rec">Recommended for this computer</span>` : "",
+        t.installed ? `<span class="badge ok">Installed</span>` : "",
+        !t.fits ? `<span class="badge">Needs ${t.min_ram_gb} GB RAM</span>` : "",
+        chosen === t.tier ? `<span class="badge">Selected</span>` : "",
+      ].join(" ");
+      let actions = "";
+      if (dlTier === t.tier) actions = `<span class="hint">Downloading…</span>`;
+      else if (t.installed) {
+        actions = `${isActive ? "" : `<button class="btn sm" data-use="${t.tier}">Use</button>`}<button class="btn ghost sm danger" data-remove-tier="${t.tier}">Remove</button>`;
+      } else if (!dlTier) {
+        actions = `<button class="btn sm ${t.tier === m.recommended_tier ? "primary" : ""}" data-download="${t.tier}">Download ${fmtGB(t.size_bytes)}</button>`;
+      }
+      return `<div class="tier ${isActive ? "active" : ""} ${t.fits ? "" : "nofit"}">
+        <div><div class="tier-name">${esc(t.label)} ${badges}</div><div class="tier-meta">${fmtGB(t.size_bytes)} · needs ${t.min_ram_gb} GB RAM · ${esc(t.notes)}</div></div>
+        <div class="tier-actions">${actions}</div>
+      </div>`;
+    })
+    .join("");
+  $("model-tiers").querySelectorAll<HTMLButtonElement>("[data-download]").forEach((b) =>
+    b.addEventListener("click", () => startDownload(b.dataset.download!))
+  );
+  $("model-tiers").querySelectorAll<HTMLButtonElement>("[data-use]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      try {
+        modelStatus = await invoke<ModelStatus>("select_model_tier", { tier: b.dataset.use });
+        settings.local_model_tier = b.dataset.use!;
+        settings.local_model_path = "";
+        toast(`Now using ${modelStatus.name}`, "ok");
+      } catch (e) {
+        toast(errMsg(e), "err");
+      }
+      refreshModelStatus();
+    })
+  );
+  $("model-tiers").querySelectorAll<HTMLButtonElement>("[data-remove-tier]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      if (!confirm("Remove this model file? You can download it again later.")) return;
+      try {
+        await invoke("delete_local_model", { tier: b.dataset.removeTier });
+        toast("Model removed", "ok");
+      } catch (e) {
+        toast(errMsg(e), "err");
+      }
+      refreshModelStatus();
+    })
+  );
   refreshEnginePill();
 }
 
-$("btn-model-download").addEventListener("click", async () => {
+async function startDownload(tier: string | null) {
   try {
-    await invoke("download_local_model");
+    const t = await invoke<string>("download_local_model", { tier });
+    if (settings.local_model_tier !== "auto") settings.local_model_tier = t;
+    settings.local_model_path = "";
     $("model-progress").hidden = false;
     $("model-progress-fill").classList.add("indeterminate");
-    $("model-progress-label").textContent = "Starting download…";
+    $("model-progress-label").textContent = `Starting ${t} model download…`;
     await refreshModelStatus();
   } catch (e) {
     toast(errMsg(e), "err", 6000);
   }
-});
+}
+
+/// First launch: fetch the recommended model without asking, unless the
+/// user turned that off, already has an API key, or chose rules only.
+async function maybeAutoDownload() {
+  if (!modelStatus || modelStatus.installed || modelStatus.downloading_tier) return;
+  if (!settings.auto_download_model || settings.anthropic_api_key || settings.engine_mode === "rules" || settings.engine_mode === "api") return;
+  const rec = modelStatus.tiers.find((t) => t.tier === modelStatus!.recommended_tier);
+  toast(`Setting up the offline AI model (${rec ? fmtGB(rec.size_bytes) : "one-time download"}). You can keep working; progress shows in the sidebar.`, "", 8000);
+  await startDownload(null);
+}
+
 $("btn-model-cancel").addEventListener("click", () => invoke("cancel_model_download"));
-$("btn-model-delete").addEventListener("click", async () => {
-  if (!confirm("Remove the offline model file? You can download it again later.")) return;
-  try {
-    await invoke("delete_local_model");
-    toast("Offline model removed", "ok");
-  } catch (e) {
-    toast(errMsg(e), "err");
-  }
-  refreshModelStatus();
-});
 $("btn-model-custom").addEventListener("click", async () => {
   const picked = await open({ multiple: false, filters: [{ name: "GGUF model", extensions: ["gguf"] }] });
   if (!picked) return;
@@ -211,21 +276,23 @@ listen<DownloadProgress>("model-download", (ev) => {
   const fill = $("model-progress-fill");
   const label = $("model-progress-label");
   if (p.done) {
+    downloadPct = null;
     if (p.error) {
       toast(p.error, "err", 7000);
     } else {
-      toast("Offline model installed. Humanizer can now rewrite without an API key.", "ok", 6000);
+      toast("Offline AI model installed. Humanizer now rewrites without any API.", "ok", 6000);
     }
     refreshModelStatus();
     return;
   }
   $("model-progress").hidden = false;
-  $("btn-model-cancel").hidden = false;
-  $("btn-model-download").hidden = true;
   fill.classList.remove("indeterminate");
   const pct = p.total ? Math.round((p.downloaded / p.total) * 100) : 0;
+  downloadPct = p.total ? pct : null;
   fill.style.width = `${pct}%`;
-  label.textContent = p.total ? `${fmtGB(p.downloaded)} / ${fmtGB(p.total)} · ${pct}%` : fmtGB(p.downloaded);
+  label.textContent = p.total ? `${p.tier} model · ${fmtGB(p.downloaded)} / ${fmtGB(p.total)} · ${pct}%` : fmtGB(p.downloaded);
+  if (!modelStatus?.downloading_tier) refreshModelStatus();
+  else refreshEnginePill();
 });
 
 $("btn-save-settings").addEventListener("click", async () => {
@@ -236,6 +303,7 @@ $("btn-save-settings").addEventListener("click", async () => {
     effort: $<HTMLSelectElement>("effort").value,
     ai_judge_enabled: $<HTMLInputElement>("ai-judge").checked,
     engine_mode: $<HTMLSelectElement>("engine-mode").value,
+    auto_download_model: $<HTMLInputElement>("auto-download").checked,
     default_style: $<HTMLSelectElement>("style").value,
     default_intensity: $<HTMLSelectElement>("intensity").value,
   };
@@ -650,5 +718,6 @@ for (const id of ["btn-downloads", "btn-about-downloads"]) {
   }
   updateCounts();
   renderDocs();
-  refreshModelStatus();
+  await refreshModelStatus();
+  maybeAutoDownload();
 })();
