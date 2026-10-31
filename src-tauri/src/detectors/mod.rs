@@ -78,8 +78,11 @@ pub fn combine(text: &str, engines: Vec<EngineReport>) -> DetectionReport {
     };
     let overall = (overall * 10.0).round() / 10.0;
 
-    let verdict = if overall < 30.0 {
-        "Likely human-written"
+    // Real human prose scores roughly 10-35 on this suite; 0 is not a thing.
+    let verdict = if overall <= 25.0 {
+        "Reads as human-written"
+    } else if overall < 40.0 {
+        "Human range"
     } else if overall < 60.0 {
         "Mixed / uncertain"
     } else {

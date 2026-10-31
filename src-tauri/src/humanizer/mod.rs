@@ -34,6 +34,45 @@ pub struct HumanizeOptions {
     pub style: String,
     /// light | balanced | strong
     pub intensity: String,
+    /// Fixed seed for reproducible tests; None = fresh randomness every run,
+    /// so clicking Humanize again produces a different rewrite.
+    #[serde(default)]
+    pub seed: Option<u32>,
+}
+
+/// Where real human writing sits on our 0-100 scale. The loop stops once a
+/// text is at or below this; pushing further mostly degrades the prose.
+pub const HUMAN_TARGET: f64 = 25.0;
+
+fn run_seed(opts: &HumanizeOptions) -> u32 {
+    opts.seed.unwrap_or_else(|| {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(7);
+        (nanos % 900_000) + 1
+    })
+}
+
+fn rounds_for(intensity: &str) -> usize {
+    match intensity {
+        "light" => 1,
+        "strong" => 4,
+        _ => 3,
+    }
+}
+
+/// Paragraph indices that still contain a sentence our detectors flagged.
+fn flagged_paragraphs(paragraphs: &[String], report: &detectors::DetectionReport) -> Vec<usize> {
+    let flagged: Vec<&str> = report.engines.iter().flat_map(|e| e.flagged.iter().map(|f| f.sentence.as_str())).collect();
+    let mut idx: Vec<usize> = paragraphs
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| eligible(p) && flagged.iter().any(|s| p.contains(s)))
+        .map(|(i, _)| i)
+        .collect();
+    if idx.is_empty() {
+        // Nothing sentence-level to point at; work on every eligible paragraph.
+        idx = paragraphs.iter().enumerate().filter(|(_, p)| eligible(p)).map(|(i, _)| i).collect();
+    }
+    idx
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -149,52 +188,66 @@ async fn local_ai(llm: Arc<LocalLlm>, paragraphs: Vec<String>, opts: &HumanizeOp
         "strong" => 3,
         _ => 2,
     };
-    let (out, failed) = local_pass(&llm, &system, &current, None, candidates, progress.clone(), "Rewriting with local AI").await;
+    let seed = run_seed(opts);
+    let polish_all = |ps: &[String]| -> Vec<String> {
+        ps.iter().map(|p| if eligible(p) { local::polish(p, contractions && opts.intensity != "light") } else { p.clone() }).collect()
+    };
+    let score_of = |ps: &[String]| detectors::detect_local(&polish_all(ps).join("\n\n")).overall;
+
+    let start_score = score_of(&current);
+    let (out, failed, reasons) = local_pass(&llm, &system, &current, None, candidates, seed, progress.clone(), "Rewriting with local AI").await;
     current = out;
     if failed > 0 {
-        warnings.push(format!("{failed} paragraph(s) kept their original wording because the local model's rewrite failed validation."));
+        warnings.push(format!("{failed} paragraph(s) fell back to the rule engine: {}.", reasons.join("; ")));
     }
     let mut passes = 1;
+    let mut best_score = score_of(&current);
 
-    if opts.intensity == "strong" {
-        let joined = current.join("\n\n");
-        let report = detectors::detect_local(&joined);
-        if report.overall >= 40.0 {
-            let flagged: Vec<String> = report.engines.iter().flat_map(|e| e.flagged.iter().map(|f| f.sentence.clone())).collect();
-            // Only paragraphs that still contain a flagged sentence get a second pass.
-            let targets: Vec<usize> = current
-                .iter()
-                .enumerate()
-                .filter(|(_, p)| flagged.iter().any(|s| p.contains(s.as_str())))
-                .map(|(i, _)| i)
-                .collect();
-            if !targets.is_empty() {
-                let feedback = "Second pass: the previous version still read machine-like (uniform sentence lengths, stock phrasing). Rewrite again with more varied rhythm and plainer wording.";
-                let (refined, _) = local_pass_subset(&llm, &system, &current, &targets, Some(feedback), candidates, progress.clone(), "Refining with local AI").await;
-                current = refined;
-                passes += 1;
-            }
+    // Keep going while the text still reads machine-like: rewrite the
+    // paragraphs that carry flagged sentences, keep the result only if the
+    // overall score improves, stop at the human band or when stuck.
+    let rounds = rounds_for(&opts.intensity);
+    while passes < rounds && best_score > HUMAN_TARGET {
+        let report = detectors::detect_local(&polish_all(&current).join("\n\n"));
+        let targets = flagged_paragraphs(&current, &report);
+        let feedback = format!(
+            "Another pass. The text still reads machine-like ({:.0}/100): uniform sentence lengths, stock phrasing, tidy structure. Rewrite with more varied rhythm, plainer and more specific wording, and different sentence openers.",
+            report.overall
+        );
+        let (refined, _, _) = local_pass_subset(&llm, &system, &current, &targets, Some(&feedback), candidates, seed.wrapping_add(passes as u32 * 97), progress.clone(), &format!("Pass {} with local AI", passes + 1)).await;
+        passes += 1;
+        let s = score_of(&refined);
+        if s + 0.5 < best_score {
+            current = refined;
+            best_score = s;
+        } else {
+            break;
         }
     }
 
-    let out: Vec<String> = current
-        .iter()
-        .map(|p| if eligible(p) { local::polish(p, contractions && opts.intensity != "light") } else { p.clone() })
-        .collect();
-    progress(1, 1, "Done");
-    HumanizeOutcome { paragraphs: out, engine: format!("local-ai ({})", llm.name), passes, warnings }
-}
+    if current == paragraphs {
+        warnings.push(format!("Nothing changed: no rewrite scored more human than the text you gave ({start_score:.0}/100). It is already in the human band, or try Strong intensity."));
+    } else if best_score > HUMAN_TARGET + 15.0 {
+        warnings.push(format!("Still {best_score:.0}/100 after {passes} passes. Click Humanize again for fresh attempts, or switch to Strong intensity."));
+    }
 
-async fn local_pass(llm: &Arc<LocalLlm>, system: &str, paragraphs: &[String], feedback: Option<&str>, candidates: usize, progress: ProgressFn, stage: &str) -> (Vec<String>, usize) {
-    let targets: Vec<usize> = paragraphs.iter().enumerate().filter(|(_, p)| eligible(p)).map(|(i, _)| i).collect();
-    local_pass_subset(llm, system, paragraphs, &targets, feedback, candidates, progress, stage).await
+    let out = polish_all(&current);
+    progress(1, 1, "Done");
+    HumanizeOutcome { paragraphs: out, engine: format!("local-ai ({})", llm.name), passes: passes as u32, warnings }
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn local_pass_subset(llm: &Arc<LocalLlm>, system: &str, paragraphs: &[String], targets: &[usize], feedback: Option<&str>, candidates: usize, progress: ProgressFn, stage: &str) -> (Vec<String>, usize) {
+async fn local_pass(llm: &Arc<LocalLlm>, system: &str, paragraphs: &[String], feedback: Option<&str>, candidates: usize, seed: u32, progress: ProgressFn, stage: &str) -> (Vec<String>, usize, Vec<String>) {
+    let targets: Vec<usize> = paragraphs.iter().enumerate().filter(|(_, p)| eligible(p)).map(|(i, _)| i).collect();
+    local_pass_subset(llm, system, paragraphs, &targets, feedback, candidates, seed, progress, stage).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn local_pass_subset(llm: &Arc<LocalLlm>, system: &str, paragraphs: &[String], targets: &[usize], feedback: Option<&str>, candidates: usize, seed: u32, progress: ProgressFn, stage: &str) -> (Vec<String>, usize, Vec<String>) {
     let total = targets.len();
     let mut out = paragraphs.to_vec();
     let mut failed = 0;
+    let mut reasons: Vec<String> = Vec::new();
     progress(0, total, stage);
     for (n, &i) in targets.iter().enumerate() {
         let llm = llm.clone();
@@ -203,19 +256,24 @@ async fn local_pass_subset(llm: &Arc<LocalLlm>, system: &str, paragraphs: &[Stri
             None => system.to_string(),
         };
         let original = paragraphs[i].clone();
-        let seed = 1000 + i as u32;
-        let rewritten = tokio::task::spawn_blocking(move || rewrite_one(&llm, &system, &original, seed, candidates)).await.ok().flatten();
+        let seed = seed.wrapping_add(i as u32 * 1_000);
+        let rewritten = tokio::task::spawn_blocking(move || rewrite_one(&llm, &system, &original, seed, candidates))
+            .await
+            .unwrap_or_else(|e| Err(format!("worker panicked: {e}")));
         match rewritten {
-            Some(t) => out[i] = t,
-            None => {
+            Ok(t) => out[i] = t,
+            Err(why) => {
                 // The model could not beat the original; the rule engine still can.
                 failed += 1;
+                if !reasons.contains(&why) {
+                    reasons.push(why);
+                }
                 out[i] = local::humanize(&paragraphs[i], &local::LocalOptions { contractions: true, restructure: true });
             }
         }
         progress(n + 1, total, stage);
     }
-    (out, failed)
+    (out, failed, reasons)
 }
 
 /// Machine-likeness of one paragraph, after the polish pass, as the gate sees it.
@@ -230,25 +288,31 @@ static LABEL_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?im)^\s*(?:rewrit
 /// `candidates` versions (plus one corrective retry if they all read worse
 /// than the input), keeps the one our detectors score most human, and only
 /// returns it if it is at least as human as the input.
-fn rewrite_one(llm: &LocalLlm, system: &str, original: &str, seed: u32, candidates: usize) -> Option<String> {
+fn rewrite_one(llm: &LocalLlm, system: &str, original: &str, seed: u32, candidates: usize) -> Result<String, String> {
     let words = text::word_count(original).max(1);
     let max_new = ((words as f64 * 2.4) as usize + 48).min(1400);
     let baseline = gate_score(original);
     let temps = [0.7f32, 0.9, 0.6, 0.8];
     let mut best: Option<(f64, String)> = None;
+    let mut last_err: Option<String> = None;
+    let mut invalid = 0usize;
     let mut attempt = 0u32;
     let mut planned = candidates.clamp(1, 3);
     while (attempt as usize) < planned.min(4) {
         let worse_so_far = best.as_ref().map_or(false, |(s, _)| *s > baseline);
         let sys = if attempt > 0 && worse_so_far { format!("{system}\n\n{LOCAL_RETRY_HINT}") } else { system.to_string() };
         let temp = temps[attempt as usize % temps.len()];
-        if let Ok(raw) = llm.generate(&sys, original, max_new, temp, seed + attempt) {
-            if let Some(t) = validate(&raw, original) {
-                let score = gate_score(&t);
-                if best.as_ref().map_or(true, |(s, _)| score < *s) {
-                    best = Some((score, t));
+        match llm.generate(&sys, original, max_new, temp, seed.wrapping_add(attempt)) {
+            Ok(raw) => match validate(&raw, original) {
+                Some(t) => {
+                    let score = gate_score(&t);
+                    if best.as_ref().map_or(true, |(s, _)| score < *s) {
+                        best = Some((score, t));
+                    }
                 }
-            }
+                None => invalid += 1,
+            },
+            Err(e) => last_err = Some(e),
         }
         attempt += 1;
         // All planned candidates read worse than the input: one corrective retry.
@@ -257,8 +321,12 @@ fn rewrite_one(llm: &LocalLlm, system: &str, original: &str, seed: u32, candidat
         }
     }
     match best {
-        Some((score, t)) if score <= baseline + 2.0 => Some(t),
-        _ => None,
+        Some((score, t)) if score <= baseline + 2.0 => Ok(t),
+        Some((score, _)) => Err(format!("no candidate read more human than the input ({score:.0} vs {baseline:.0})")),
+        None => Err(match last_err {
+            Some(e) => format!("model error: {e}"),
+            None => format!("{invalid} candidate(s) failed validation"),
+        }),
     }
 }
 
@@ -299,42 +367,56 @@ async fn api(client: Arc<ClaudeClient>, paragraphs: Vec<String>, opts: &Humanize
     let mut current = paragraphs.clone();
     let system = format!("{SYSTEM_PROMPT}\n\n{}\n{}", style_block(&opts.style), intensity_block(&opts.intensity));
 
+    let polish_all = |ps: &[String]| -> Vec<String> {
+        ps.iter().map(|p| if eligible(p) { local::polish(p, contractions && opts.intensity != "light") } else { p.clone() }).collect()
+    };
+    let score_of = |ps: &[String]| detectors::detect_local(&polish_all(ps).join("\n\n")).overall;
+
     let (rewritten, mut errs) = model_pass(&client, &system, &current, None, progress.clone(), "Rewriting").await;
-    current = rewritten;
     warnings.append(&mut errs);
     let mut passes = 1;
+    // Accept the first pass only if it is not worse than the input.
+    let mut best_score = score_of(&current);
+    let s1 = score_of(&rewritten);
+    if s1 <= best_score + 2.0 {
+        current = rewritten;
+        best_score = s1;
+    }
 
-    if opts.intensity == "strong" {
-        let joined = current.join("\n\n");
-        let report = detectors::detect_local(&joined);
-        if report.overall >= 40.0 {
-            let mut flagged: Vec<String> = report
-                .engines
-                .iter()
-                .flat_map(|e| e.flagged.iter().map(|f| format!("- \"{}\" ({})", f.sentence, f.reason)))
-                .collect();
-            flagged.dedup();
-            flagged.truncate(14);
-            if !flagged.is_empty() {
-                let feedback = format!(
-                    "A second pass. Our detector still scores the previous rewrite at {:.0}/100 machine-likeness. The sentences below were flagged; fix those patterns wherever they occur, and keep every rule.\n{}",
-                    report.overall,
-                    flagged.join("\n")
-                );
-                let (refined, mut errs2) = model_pass(&client, &system, &current, Some(&feedback), progress.clone(), "Refining").await;
-                current = refined;
-                warnings.append(&mut errs2);
-                passes += 1;
-            }
+    let rounds = rounds_for(&opts.intensity);
+    while passes < rounds && best_score > HUMAN_TARGET {
+        let report = detectors::detect_local(&polish_all(&current).join("\n\n"));
+        let mut flagged: Vec<String> = report
+            .engines
+            .iter()
+            .flat_map(|e| e.flagged.iter().map(|f| format!("- \"{}\" ({})", f.sentence, f.reason)))
+            .collect();
+        flagged.dedup();
+        flagged.truncate(14);
+        let feedback = format!(
+            "Another pass. Our detector still scores the previous rewrite at {:.0}/100 machine-likeness. The sentences below were flagged; fix those patterns wherever they occur, vary rhythm and openers more, and keep every rule.\n{}",
+            report.overall,
+            flagged.join("\n")
+        );
+        let (refined, mut errs2) = model_pass(&client, &system, &current, Some(&feedback), progress.clone(), &format!("Pass {}", passes + 1)).await;
+        warnings.append(&mut errs2);
+        passes += 1;
+        let s = score_of(&refined);
+        if s + 0.5 < best_score {
+            current = refined;
+            best_score = s;
+        } else {
+            break;
         }
     }
 
-    let out: Vec<String> = current
-        .iter()
-        .map(|p| if eligible(p) { local::polish(p, contractions && opts.intensity != "light") } else { p.clone() })
-        .collect();
+    if current == paragraphs {
+        warnings.push("Nothing changed: no rewrite scored more human than the text you gave. It is already in the human band, or try Strong intensity.".into());
+    }
+
+    let out = polish_all(&current);
     progress(1, 1, "Done");
-    HumanizeOutcome { paragraphs: out, engine: client.model.clone(), passes, warnings }
+    HumanizeOutcome { paragraphs: out, engine: client.model.clone(), passes: passes as u32, warnings }
 }
 
 /// One model pass over all eligible paragraphs, chunked and run concurrently.
@@ -430,4 +512,13 @@ fn parse_blocks(raw: &str, idxs: &[usize], originals: &[String]) -> Vec<(usize, 
         out.push((i, t.to_string()));
     }
     out
+}
+
+#[cfg(test)]
+pub fn debug_local_system(style: &str, intensity: &str) -> String {
+    format!("{LOCAL_SYSTEM_PROMPT}\n{}\n{}", style_block(style), intensity_block(intensity))
+}
+#[cfg(test)]
+pub fn debug_validate(raw: &str, original: &str) -> Option<String> {
+    validate(raw, original)
 }

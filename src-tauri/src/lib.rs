@@ -55,6 +55,7 @@ pub fn run() {
             commands::cancel_model_download,
             commands::delete_local_model,
             commands::select_model_tier,
+            commands::chat_send,
             commands::use_custom_model,
             commands::test_local_model,
         ])

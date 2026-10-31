@@ -109,7 +109,11 @@ fn local_model_pipeline_lowers_score() {
     use crate::humanizer::{humanize_paragraphs, local_llm, Engine, HumanizeOptions};
     let home = std::env::var("HOME").unwrap_or_default();
     let dir = std::path::PathBuf::from(home).join("Library/Application Support/com.arunaistudio.humanizer/models");
-    let present: Vec<&local_llm::ModelSpec> = local_llm::CATALOG.iter().filter(|m| dir.join(m.file).is_file()).collect();
+    let only = std::env::var("HUMANIZER_TEST_TIER").ok();
+    let present: Vec<&local_llm::ModelSpec> = local_llm::CATALOG
+        .iter()
+        .filter(|m| dir.join(m.file).is_file() && only.as_deref().map_or(true, |t| t == m.tier))
+        .collect();
     if present.is_empty() {
         eprintln!("skipping: no catalog model under {}", dir.display());
         return;
@@ -119,7 +123,7 @@ fn local_model_pipeline_lowers_score() {
         let llm = std::sync::Arc::new(local_llm::LocalLlm::load(&dir.join(spec.file)).expect("load model"));
         println!("===== {} =====", spec.label);
         for (sample, name, min_drop) in [(ESSAY, "essay", 0.0), (AI_TEXT, "ai-sample", 15.0)] {
-            let opts = HumanizeOptions { style: "natural".into(), intensity: "balanced".into() };
+            let opts = HumanizeOptions { style: "natural".into(), intensity: "balanced".into(), seed: Some(1) };
             let progress: crate::humanizer::ProgressFn = std::sync::Arc::new(|_, _, _| {});
             let t0 = std::time::Instant::now();
             let out = rt.block_on(humanize_paragraphs(Engine::Local(llm.clone()), crate::text::paragraphs(sample), &opts, progress));
@@ -131,6 +135,17 @@ fn local_model_pipeline_lowers_score() {
                 assert!(text.contains("Everest") && text.contains("Nepal"), "lost a fact");
             }
             assert!(after <= before - min_drop, "[{}/{name}] expected a drop of {min_drop}+: {before} -> {after}", spec.tier);
+
+            // Feeding the result back in (what a user does when clicking again)
+            // must never make it worse, and a fresh seed must not be a no-op
+            // unless the text is already in the human band.
+            let opts2 = HumanizeOptions { style: "natural".into(), intensity: "balanced".into(), seed: Some(2) };
+            let progress2: crate::humanizer::ProgressFn = std::sync::Arc::new(|_, _, _| {});
+            let again = rt.block_on(humanize_paragraphs(Engine::Local(llm.clone()), crate::text::paragraphs(&text), &opts2, progress2));
+            let text2 = again.paragraphs.join("\n\n");
+            let after2 = detect_local(&text2).overall;
+            println!("[{name}] second click: {after} -> {after2} warnings {:?}", again.warnings);
+            assert!(after2 <= after + 0.5, "[{}/{name}] second pass got worse: {after} -> {after2}", spec.tier);
         }
     }
 }
@@ -180,4 +195,55 @@ fn model_download_cancels_and_resumes() {
     }
     assert!(!dl.active.load(Ordering::SeqCst));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[ignore]
+fn debug_gemma_raw_outputs() {
+    use crate::humanizer::local_llm::LocalLlm;
+    let home = std::env::var("HOME").unwrap_or_default();
+    let path = std::path::PathBuf::from(home).join("Library/Application Support/com.arunaistudio.humanizer/models/gemma-3-12b-it-qat-Q4_K_M.gguf");
+    let llm = LocalLlm::load(&path).expect("load");
+    let system = crate::humanizer::debug_local_system("natural", "balanced");
+    for seed in [1u32, 2, 1000] {
+        let t0 = std::time::Instant::now();
+        let raw = llm.generate(&system, ESSAY, 300, 0.7, seed);
+        println!("--- seed {seed} ({:.1}s) ---\n{:?}\n", t0.elapsed().as_secs_f64(), raw.as_ref().map(|s| s.chars().take(600).collect::<String>()));
+        if let Ok(r) = &raw {
+            println!("validate -> {:?}", crate::humanizer::debug_validate(r, ESSAY).map(|t| (detect_local(&crate::humanizer::local::polish(&t, true)).overall, t.chars().take(120).collect::<String>())));
+        }
+    }
+    println!("baseline gate score: {}", detect_local(&crate::humanizer::local::polish(ESSAY, true)).overall);
+}
+
+/// Multi-turn chat with streaming on the light model (skips if absent).
+#[test]
+fn local_chat_streams_and_remembers_context() {
+    use crate::humanizer::local_llm::{LocalLlm, DEFAULT_MODEL_FILE};
+    let home = std::env::var("HOME").unwrap_or_default();
+    let path = std::path::PathBuf::from(home).join("Library/Application Support/com.arunaistudio.humanizer/models").join(DEFAULT_MODEL_FILE);
+    if !path.is_file() {
+        eprintln!("skipping: light model not present");
+        return;
+    }
+    let llm = LocalLlm::load(&path).expect("load");
+    let system = "You are a helpful assistant. Answer briefly.";
+    let turns = vec![
+        ("user".to_string(), "My name is Arun and my favourite mountain is Annapurna. Reply with one short sentence.".to_string()),
+        ("assistant".to_string(), "Nice to meet you, Arun. Annapurna is a great choice.".to_string()),
+        ("user".to_string(), "What is my favourite mountain? Answer with just its name.".to_string()),
+    ];
+    let mut pieces = 0usize;
+    let mut streamed = String::new();
+    let reply = llm
+        .generate_chat(system, &turns, 60, 0.2, 3, &mut |piece| {
+            pieces += 1;
+            streamed.push_str(piece);
+            true
+        })
+        .expect("chat");
+    println!("chat reply ({pieces} pieces): {reply:?}");
+    assert!(pieces >= 2, "expected streamed pieces");
+    assert_eq!(streamed.trim(), reply.trim());
+    assert!(reply.to_lowercase().contains("annapurna"), "lost conversation context: {reply}");
 }

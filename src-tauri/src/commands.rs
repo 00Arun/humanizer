@@ -173,7 +173,7 @@ pub async fn humanize_text(app: AppHandle, state: State<'_, AppState>, text_in: 
     let progress = progress_fn(&app, "text");
     progress(0, 1, "Loading engine");
     let engine = resolve_engine(&app, &state).await?;
-    let opts = HumanizeOptions { style, intensity };
+    let opts = HumanizeOptions { style, intensity, seed: None };
     let paras = text::paragraphs(&text_in);
     let before = detectors::detect_local(&text_in);
     let outcome = humanizer::humanize_paragraphs(engine, paras, &opts, progress).await;
@@ -259,7 +259,7 @@ pub async fn humanize_document(app: AppHandle, state: State<'_, AppState>, path:
     let progress = progress_fn(&app, &path);
     progress(0, 1, "Loading engine");
     let engine = resolve_engine(&app, &state).await?;
-    let opts = HumanizeOptions { style, intensity };
+    let opts = HumanizeOptions { style, intensity, seed: None };
 
     let inputs: Vec<String> = doc.paragraphs.iter().map(|p| if p.editable { p.text.clone() } else { String::new() }).collect();
     let before = detectors::detect_local(&doc.plain_text()).overall;
@@ -487,4 +487,92 @@ pub async fn test_local_model(app: AppHandle, state: State<'_, AppState>) -> Res
     let gen_ms = t1.elapsed().as_millis().max(1);
     let toks = text::word_count(&out).max(1) as f64 * 1.3;
     Ok(format!("{} ready on {} (load {:.1}s, ~{:.0} tokens/s). Sample: “{}”", llm.name, LocalLlm::accelerator(), load_ms as f64 / 1000.0, toks / (gen_ms as f64 / 1000.0), out))
+}
+
+// ---------------------------------------------------------------------------
+// Chat
+// ---------------------------------------------------------------------------
+
+const CHAT_SYSTEM: &str = "You are Humanizer's assistant, built into a desktop app by Arun AI Studio. Be helpful, direct and natural. Answer in the language the user writes in (Nepali, English or mixed). Keep answers as short as the question allows; use plain formatting. If asked to rewrite or humanize text, do it in a natural human voice without stock phrases.";
+
+#[derive(serde::Deserialize)]
+pub struct ChatTurn {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Clone, Serialize)]
+struct ChatToken {
+    id: String,
+    text: String,
+    done: bool,
+    error: Option<String>,
+    engine: String,
+}
+
+/// Streams the assistant reply for a conversation as `chat-token` events
+/// (`id` identifies the reply) and returns the full text at the end.
+#[tauri::command]
+pub async fn chat_send(app: AppHandle, state: State<'_, AppState>, id: String, turns: Vec<ChatTurn>) -> Result<String, String> {
+    let mut history: Vec<(String, String)> = turns
+        .into_iter()
+        .filter(|t| (t.role == "user" || t.role == "assistant") && !t.content.trim().is_empty())
+        .map(|t| (t.role, t.content))
+        .collect();
+    if history.last().map_or(true, |(r, _)| r != "user") {
+        return Err("The last message must be from you.".into());
+    }
+    // Keep the context bounded for the local model.
+    while history.iter().map(|(_, c)| text::word_count(c)).sum::<usize>() > 1800 && history.len() > 2 {
+        history.drain(0..2);
+    }
+
+    let emit = {
+        let app = app.clone();
+        let id = id.clone();
+        move |text: &str, done: bool, error: Option<String>, engine: &str| {
+            let _ = app.emit("chat-token", ChatToken { id: id.clone(), text: text.to_string(), done, error, engine: engine.to_string() });
+        }
+    };
+
+    match resolve_engine(&app, &state).await? {
+        Engine::Api(client) => {
+            let reply = client.chat(CHAT_SYSTEM, &history, 4000, Some("medium")).await;
+            match reply {
+                Ok(t) => {
+                    emit(&t, true, None, &client.model);
+                    Ok(t)
+                }
+                Err(e) => {
+                    emit("", true, Some(e.clone()), &client.model);
+                    Err(e)
+                }
+            }
+        }
+        Engine::Local(llm) => {
+            let name = llm.name.clone();
+            let emit2 = emit.clone();
+            let n2 = name.clone();
+            let res = tokio::task::spawn_blocking(move || {
+                let mut cb = |piece: &str| {
+                    emit2(piece, false, None, &n2);
+                    true
+                };
+                llm.generate_chat(CHAT_SYSTEM, &history, 1200, 0.7, 11, &mut cb)
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+            match res {
+                Ok(t) => {
+                    emit("", true, None, &name);
+                    Ok(t)
+                }
+                Err(e) => {
+                    emit("", true, Some(e.clone()), &name);
+                    Err(e)
+                }
+            }
+        }
+        Engine::Rules => Err("Chat needs an AI engine: wait for the offline model to finish downloading, or add an API key in Settings.".into()),
+    }
 }

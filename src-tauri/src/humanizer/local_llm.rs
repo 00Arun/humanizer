@@ -144,12 +144,30 @@ impl LocalLlm {
     /// One chat turn; returns the assistant text. Synchronous and CPU/GPU
     /// bound, so callers run it inside `spawn_blocking`.
     pub fn generate(&self, system: &str, user: &str, max_new: usize, temperature: f32, seed: u32) -> Result<String, String> {
+        let turns = [("user".to_string(), user.to_string())];
+        self.generate_chat(system, &turns, max_new, temperature, seed, &mut |_| true)
+    }
+
+    /// Multi-turn generation with streaming. `turns` alternate user/assistant,
+    /// ending with the user's latest message. `on_token` receives each piece
+    /// of text as it is produced and returns false to stop early.
+    pub fn generate_chat(
+        &self,
+        system: &str,
+        turns: &[(String, String)],
+        max_new: usize,
+        temperature: f32,
+        seed: u32,
+        on_token: &mut dyn FnMut(&str) -> bool,
+    ) -> Result<String, String> {
         let tmpl = self.model.chat_template(None).map_err(|e| format!("chat template: {e}"))?;
-        let user_msg = if self.no_think { format!("{user}\n/no_think") } else { user.to_string() };
-        let chat = [
-            LlamaChatMessage::new("system".into(), system.into()).map_err(|e| e.to_string())?,
-            LlamaChatMessage::new("user".into(), user_msg).map_err(|e| e.to_string())?,
-        ];
+        let mut chat = Vec::with_capacity(turns.len() + 1);
+        chat.push(LlamaChatMessage::new("system".into(), system.into()).map_err(|e| e.to_string())?);
+        let last = turns.len().saturating_sub(1);
+        for (i, (role, content)) in turns.iter().enumerate() {
+            let content = if self.no_think && i == last && role == "user" { format!("{content}\n/no_think") } else { content.clone() };
+            chat.push(LlamaChatMessage::new(role.clone(), content).map_err(|e| e.to_string())?);
+        }
         let prompt = self.model.apply_chat_template(&tmpl, &chat, true).map_err(|e| format!("apply template: {e}"))?;
 
         let vocab = self.model.vocab();
@@ -187,13 +205,36 @@ impl LocalLlm {
         ]);
 
         let mut out: Vec<u8> = Vec::with_capacity(max_new * 4);
+        // Bytes not yet flushed to the callback (a UTF-8 char may span tokens).
+        let mut pending: Vec<u8> = Vec::new();
+        let mut in_think = false;
         let mut pos = tokens.len() as i32;
         for _ in 0..max_new {
             let token = sampler.sample(&ctx, batch.n_tokens() - 1);
             if vocab.is_eog(token) {
                 break;
             }
-            out.extend(vocab.token_to_piece(token, true, None));
+            let piece = vocab.token_to_piece(token, true, None);
+            out.extend(&piece);
+            pending.extend(&piece);
+            if let Ok(s) = std::str::from_utf8(&pending) {
+                // Hide hidden-reasoning blocks from the stream.
+                if s.contains("<think>") {
+                    in_think = true;
+                }
+                if in_think {
+                    if s.contains("</think>") {
+                        in_think = false;
+                    }
+                    pending.clear();
+                } else if !s.is_empty() {
+                    let keep_going = on_token(s);
+                    pending.clear();
+                    if !keep_going {
+                        break;
+                    }
+                }
+            }
             batch.clear();
             batch.add(token, pos, &[0], true).map_err(|e| e.to_string())?;
             pos += 1;

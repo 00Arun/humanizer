@@ -60,8 +60,8 @@ interface Progress { id: string; done: number; total: number; stage: string }
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const words = (s: string) => (s.match(/[A-Za-zऀ-ॿ][\w'’-]*/g) || []).length;
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string));
-const band = (v: number) => (v < 30 ? "low" : v < 60 ? "mid" : "high");
-const bandColor = (v: number) => (v < 30 ? "var(--ok)" : v < 60 ? "var(--warn)" : "var(--bad)");
+const band = (v: number) => (v < 40 ? "low" : v < 60 ? "mid" : "high");
+const bandColor = (v: number) => (v < 40 ? "var(--ok)" : v < 60 ? "var(--warn)" : "var(--bad)");
 
 function toast(msg: string, kind: "" | "ok" | "err" = "", ms = 4200): HTMLElement {
   const el = document.createElement("div");
@@ -485,7 +485,8 @@ $("btn-humanize").addEventListener("click", async () => {
       $("warnings").hidden = false;
     }
     renderDetection(r.after, r.text, `Result · ${r.engine} · ${r.passes} pass${r.passes > 1 ? "es" : ""}`);
-    toast(`Done: ${Math.round(r.before.overall)} → ${Math.round(r.after.overall)} machine-likeness`, "ok");
+    const a = Math.round(r.after.overall);
+    toast(a <= 25 ? `Done: ${Math.round(r.before.overall)} → ${a}. In the human band.` : `Done: ${Math.round(r.before.overall)} → ${a}. Click Humanize again for another pass.`, "ok", 5000);
   } catch (e) {
     toast(errMsg(e), "err", 7000);
   } finally {
@@ -726,6 +727,97 @@ listen<Progress>("humanize-progress", (ev) => {
     d.progress = p;
     renderDocs();
   }
+});
+
+// ---------------------------------------------------------------------------
+// Chat
+// ---------------------------------------------------------------------------
+interface ChatMsg { role: "user" | "assistant"; content: string }
+interface ChatToken { id: string; text: string; done: boolean; error: string | null; engine: string }
+const chatHistory: ChatMsg[] = [];
+let chatBusy = false;
+let chatReplyId = "";
+let chatReplyEl: HTMLElement | null = null;
+
+function chatAppend(role: ChatMsg["role"], content: string, meta = ""): HTMLElement {
+  $("chat-empty").hidden = true;
+  const el = document.createElement("div");
+  el.className = `msg ${role}`;
+  el.textContent = content;
+  if (meta) {
+    const m = document.createElement("span");
+    m.className = "meta";
+    m.textContent = meta;
+    el.appendChild(m);
+  }
+  $("chat-log").appendChild(el);
+  $("chat-log").scrollTop = $("chat-log").scrollHeight;
+  return el;
+}
+
+async function chatSend() {
+  const input = $<HTMLTextAreaElement>("chat-input");
+  const text = input.value.trim();
+  if (!text || chatBusy) return;
+  input.value = "";
+  chatHistory.push({ role: "user", content: text });
+  chatAppend("user", text);
+  chatBusy = true;
+  $<HTMLButtonElement>("btn-chat-send").disabled = true;
+  $("chat-status").textContent = "Thinking…";
+  chatReplyId = `r${Date.now()}`;
+  chatReplyEl = chatAppend("assistant", "");
+  chatReplyEl.classList.add("streaming");
+  try {
+    const full = await invoke<string>("chat_send", { id: chatReplyId, turns: chatHistory });
+    chatHistory.push({ role: "assistant", content: full });
+    if (chatReplyEl) {
+      chatReplyEl.classList.remove("streaming");
+      // Streaming may have shown partial text; settle on the final answer.
+      const meta = chatReplyEl.querySelector(".meta");
+      chatReplyEl.textContent = full;
+      if (meta) chatReplyEl.appendChild(meta);
+    }
+  } catch (e) {
+    chatReplyEl?.remove();
+    chatHistory.pop();
+    toast(errMsg(e), "err", 7000);
+  } finally {
+    chatBusy = false;
+    $<HTMLButtonElement>("btn-chat-send").disabled = false;
+    $("chat-status").textContent = "";
+    $("chat-log").scrollTop = $("chat-log").scrollHeight;
+    input.focus();
+  }
+}
+$("btn-chat-send").addEventListener("click", chatSend);
+$<HTMLTextAreaElement>("chat-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    chatSend();
+  }
+});
+$("btn-chat-clear").addEventListener("click", () => {
+  if (chatBusy) return;
+  chatHistory.splice(0, chatHistory.length);
+  $("chat-log").querySelectorAll(".msg").forEach((m) => m.remove());
+  $("chat-empty").hidden = false;
+});
+listen<ChatToken>("chat-token", (ev) => {
+  const p = ev.payload;
+  if (p.id !== chatReplyId || !chatReplyEl) return;
+  if (p.error) return;
+  if (!p.done) {
+    chatReplyEl.textContent += p.text;
+    $("chat-log").scrollTop = $("chat-log").scrollHeight;
+  } else {
+    if (p.text) chatReplyEl.textContent = p.text; // non-streaming engines deliver the whole reply at the end
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent = p.engine;
+    chatReplyEl.appendChild(meta);
+  }
+  $("chat-status").textContent = p.done ? "" : `Replying with ${p.engine}…`;
 });
 
 // ---------------------------------------------------------------------------

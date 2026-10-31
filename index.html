@@ -23,6 +23,9 @@
           <button class="nav-item" data-view="documents">
             <span class="nav-ico">▤</span> Documents
           </button>
+          <button class="nav-item" data-view="chat">
+            <span class="nav-ico">✉</span> Chat
+          </button>
           <button class="nav-item" data-view="settings">
             <span class="nav-ico">⚙</span> Settings
           </button>
@@ -126,6 +129,7 @@
                 <div class="detect-verdict" id="detect-verdict">—</div>
                 <div class="muted" id="detect-meta"></div>
                 <div class="muted" id="detect-note"></div>
+                <div class="muted small">Scale: 0–25 reads as human, 25–40 human range, 40–60 mixed, 60+ machine-like. Genuine human writing scores about 10–35 on these engines; nothing scores 0.</div>
                 <label class="toggle-inline"><input type="checkbox" id="use-judge" checked /> Include AI Judge (model-based)</label>
               </div>
             </div>
@@ -176,6 +180,29 @@
             <button class="btn primary lg" id="btn-humanize-docs" disabled>Humanize all</button>
             <button class="btn ghost" id="btn-clear-docs" disabled>Clear list</button>
             <span class="muted">Each file is saved next to the original as <code>name.humanized.ext</code> (you'll be asked where).</span>
+          </div>
+        </section>
+
+        <!-- ============ CHAT ============ -->
+        <section class="view" id="view-chat">
+          <header class="view-head">
+            <div>
+              <h1>Chat</h1>
+              <p class="muted">Ask anything, in Nepali or English. Runs on the offline model on this computer (or the Claude API when a key is set). Nothing is stored.</p>
+            </div>
+            <div class="controls">
+              <button class="btn ghost" id="btn-chat-clear">New chat</button>
+            </div>
+          </header>
+          <div class="chat">
+            <div class="chat-log" id="chat-log">
+              <div class="chat-empty muted" id="chat-empty">Try: “Make this email sound friendlier: …”, “Explain burstiness in two lines”, “नेपालीमा एउटा छोटो निबन्ध लेख”.</div>
+            </div>
+            <div class="chat-compose">
+              <textarea id="chat-input" rows="2" placeholder="Type a message… (Enter to send, Shift+Enter for a new line)"></textarea>
+              <button class="btn primary" id="btn-chat-send">Send</button>
+            </div>
+            <div class="hint" id="chat-status"></div>
           </div>
         </section>
 

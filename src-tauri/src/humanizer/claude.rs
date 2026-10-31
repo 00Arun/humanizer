@@ -13,11 +13,17 @@ impl ClaudeClient {
     /// One user turn in, assistant text out. Opts into server-side refusal
     /// fallbacks so a classifier decline is retried on a sibling model.
     pub async fn complete(&self, system: &str, user: &str, max_tokens: u32, effort_override: Option<&str>) -> Result<String, String> {
+        self.chat(system, &[("user".to_string(), user.to_string())], max_tokens, effort_override).await
+    }
+
+    /// Multi-turn: `turns` alternate user/assistant and end with the user.
+    pub async fn chat(&self, system: &str, turns: &[(String, String)], max_tokens: u32, effort_override: Option<&str>) -> Result<String, String> {
+        let messages: Vec<Value> = turns.iter().map(|(role, content)| json!({"role": role, "content": content})).collect();
         let body = json!({
             "model": self.model,
             "max_tokens": max_tokens,
             "system": system,
-            "messages": [{"role": "user", "content": user}],
+            "messages": messages,
             "fallbacks": "default",
             "output_config": {"effort": effort_override.unwrap_or(&self.effort)}
         });
