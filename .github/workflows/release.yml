@@ -10,7 +10,7 @@
 #   TAURI_SIGNING_PRIVATE_KEY           contents of ~/.tauri/humanizer.key
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  leave empty if the key has none
 #   RELEASES_REPO_TOKEN                 fine-grained PAT with "Contents: write"
-#                                       on the PUBLIC Arunpandey2/humanizer-releases
+#                                       on the PUBLIC 00Arun/humanizer-releases
 #                                       repo. This code repo is private, so the
 #                                       updater reads latest.json from that public
 #                                       binaries-only repo instead.
