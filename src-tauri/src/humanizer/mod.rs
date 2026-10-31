@@ -196,12 +196,17 @@ async fn local_ai(llm: Arc<LocalLlm>, paragraphs: Vec<String>, opts: &HumanizeOp
 
     let start_score = score_of(&current);
     let (out, failed, reasons) = local_pass(&llm, &system, &current, None, candidates, seed, progress.clone(), "Rewriting with local AI").await;
-    current = out;
     if failed > 0 {
         warnings.push(format!("{failed} paragraph(s) fell back to the rule engine: {}.", reasons.join("; ")));
     }
     let mut passes = 1;
-    let mut best_score = score_of(&current);
+    // Keep the first pass only if the text as a whole did not get worse.
+    let mut best_score = start_score;
+    let s1 = score_of(&out);
+    if s1 <= start_score + 0.5 {
+        current = out;
+        best_score = s1;
+    }
 
     // Keep going while the text still reads machine-like: rewrite the
     // paragraphs that carry flagged sentences, keep the result only if the
@@ -320,8 +325,11 @@ fn rewrite_one(llm: &LocalLlm, system: &str, original: &str, seed: u32, candidat
             planned += 1;
         }
     }
+    // Near the human band every point counts; further out a tiny loss is a
+    // fair price for a genuinely different rewrite.
+    let tolerance = if baseline <= HUMAN_TARGET + 15.0 { 0.0 } else { 2.0 };
     match best {
-        Some((score, t)) if score <= baseline + 2.0 => Ok(t),
+        Some((score, t)) if score <= baseline + tolerance => Ok(t),
         Some((score, _)) => Err(format!("no candidate read more human than the input ({score:.0} vs {baseline:.0})")),
         None => Err(match last_err {
             Some(e) => format!("model error: {e}"),

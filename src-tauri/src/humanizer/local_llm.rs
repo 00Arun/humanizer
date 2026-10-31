@@ -150,13 +150,24 @@ fn backend() -> Result<&'static LlamaBackend, String> {
     })
 }
 
+/// Prompt format used when llama.cpp's built-in template renderer cannot
+/// handle a model's (often tool-calling, Jinja-heavy) chat template.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Family {
+    Gemma4,
+    Gemma,
+    ChatMl,
+}
+
 pub struct LocalLlm {
     model: LlamaModel,
     pub path: PathBuf,
     pub name: String,
+    pub architecture: String,
     threads: i32,
     n_ctx: u32,
     no_think: bool,
+    family: Family,
 }
 
 impl LocalLlm {
@@ -169,14 +180,62 @@ impl LocalLlm {
         let params = LlamaModelParams::default().with_n_gpu_layers(gpu_layers);
         let model = LlamaModel::load_from_file(backend, path, &params).map_err(|e| format!("Could not load model: {e}"))?;
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(2, 12) as i32;
-        let n_ctx = model.n_ctx_train().min(4096).max(1024);
+        // Bigger models get a smaller context so the KV cache fits next to
+        // the weights on 16 GB machines; paragraphs never need more.
+        let file_gb = std::fs::metadata(path).map(|m| m.len() as f64 / 1e9).unwrap_or(0.0);
+        let cap = if file_gb > 6.0 { 2048 } else { 4096 };
+        let n_ctx = model.n_ctx_train().min(cap).max(1024);
         let name = spec_for_file(path)
             .map(|s| s.label.to_string())
             .unwrap_or_else(|| path.file_stem().and_then(|s| s.to_str()).unwrap_or("local model").to_string());
         // Any Qwen3 hybrid model (not the "-2507" instruct releases) thinks unless told not to.
         let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
         let no_think = spec_for_file(path).map(|s| s.no_think).unwrap_or(fname.contains("Qwen3") && !fname.contains("2507"));
-        Ok(Self { model, path: path.to_path_buf(), name, threads, n_ctx, no_think })
+        let architecture = model.meta_val_str("general.architecture").unwrap_or_default();
+        let family = match architecture.as_str() {
+            "gemma4" => Family::Gemma4,
+            a if a.starts_with("gemma") => Family::Gemma,
+            _ => Family::ChatMl,
+        };
+        Ok(Self { model, path: path.to_path_buf(), name, architecture, threads, n_ctx, no_think, family })
+    }
+
+    /// Renders the conversation by hand for models whose template llama.cpp
+    /// cannot apply. Formats follow the models' own chat templates.
+    fn render_fallback(&self, system: &str, turns: &[(String, String)]) -> String {
+        let mut p = String::new();
+        match self.family {
+            Family::Gemma4 => {
+                p.push_str("<|turn>system\n");
+                p.push_str(system.trim());
+                p.push_str("<turn|>\n");
+                for (role, content) in turns {
+                    let r = if role == "assistant" { "model" } else { role.as_str() };
+                    p.push_str(&format!("<|turn>{r}\n{}<turn|>\n", content.trim()));
+                }
+                // Generation prompt with thinking disabled: an empty thought channel.
+                p.push_str("<|turn>model\n<|channel>thought\n<channel|>");
+            }
+            Family::Gemma => {
+                // Gemma 2/3 have no system role; it is folded into the first user turn.
+                let mut first = true;
+                for (role, content) in turns {
+                    let r = if role == "assistant" { "model" } else { role.as_str() };
+                    let body = if first && r == "user" { format!("{}\n\n{}", system.trim(), content.trim()) } else { content.trim().to_string() };
+                    first = false;
+                    p.push_str(&format!("<start_of_turn>{r}\n{body}<end_of_turn>\n"));
+                }
+                p.push_str("<start_of_turn>model\n");
+            }
+            Family::ChatMl => {
+                p.push_str(&format!("<|im_start|>system\n{}<|im_end|>\n", system.trim()));
+                for (role, content) in turns {
+                    p.push_str(&format!("<|im_start|>{role}\n{}<|im_end|>\n", content.trim()));
+                }
+                p.push_str("<|im_start|>assistant\n");
+            }
+        }
+        p
     }
 
     pub fn accelerator() -> &'static str {
@@ -202,7 +261,7 @@ impl LocalLlm {
         seed: u32,
         on_token: &mut dyn FnMut(&str) -> bool,
     ) -> Result<String, String> {
-        let tmpl = self.model.chat_template(None).map_err(|e| format!("chat template: {e}"))?;
+        let tmpl = self.model.chat_template(None).ok();
         let mut chat = Vec::with_capacity(turns.len() + 1);
         chat.push(LlamaChatMessage::new("system".into(), system.into()).map_err(|e| e.to_string())?);
         let last = turns.len().saturating_sub(1);
@@ -210,7 +269,12 @@ impl LocalLlm {
             let content = if self.no_think && i == last && role == "user" { format!("{content}\n/no_think") } else { content.clone() };
             chat.push(LlamaChatMessage::new(role.clone(), content).map_err(|e| e.to_string())?);
         }
-        let prompt = self.model.apply_chat_template(&tmpl, &chat, true).map_err(|e| format!("apply template: {e}"))?;
+        let prompt = match tmpl.as_ref().ok_or(()).and_then(|t| self.model.apply_chat_template(t, &chat, true).map_err(|_| ())) {
+            Ok(p) => p,
+            // Newer templates (Gemma 4's tool-calling Jinja, for one) are
+            // beyond llama.cpp's built-in renderer; use our own.
+            Err(_) => self.render_fallback(system, turns),
+        };
 
         let vocab = self.model.vocab();
         let mut tokens = vocab.tokenize(prompt.as_bytes(), false, true);
@@ -222,20 +286,41 @@ impl LocalLlm {
             return Err(format!("Passage too long for the local model ({} tokens; limit ~{}).", tokens.len(), n_ctx - max_new - 8));
         }
 
+        // Fit the context to this request; retry once smaller if memory is tight.
+        let needed = (tokens.len() + max_new + 16) as u32;
+        let mut ctx_size = needed.max(1024).min(self.n_ctx);
         let n_batch = tokens.len().max(512) as u32;
-        let ctx_params = LlamaContextParams::default()
-            .with_n_ctx(NonZeroU32::new(self.n_ctx))
-            .with_n_batch(n_batch)
-            .with_n_threads(self.threads)
-            .with_n_threads_batch(self.threads);
-        let mut ctx = self.model.new_context(backend()?, ctx_params).map_err(|e| format!("context: {e}"))?;
-
-        let mut batch = LlamaBatch::new(n_batch as usize, 1);
-        let last = tokens.len() - 1;
-        for (i, t) in tokens.iter().enumerate() {
-            batch.add(*t, i as i32, &[0], i == last).map_err(|e| e.to_string())?;
-        }
-        ctx.decode(&mut batch).map_err(|e| format!("decode: {e}"))?;
+        let mut attempt = 0;
+        let (mut ctx, mut batch) = loop {
+            let ctx_params = LlamaContextParams::default()
+                .with_n_ctx(NonZeroU32::new(ctx_size))
+                .with_n_batch(n_batch)
+                .with_n_threads(self.threads)
+                .with_n_threads_batch(self.threads);
+            let created = self.model.new_context(backend()?, ctx_params).map_err(|e| format!("context: {e}"));
+            let decoded = created.and_then(|mut ctx| {
+                let mut batch = LlamaBatch::new(n_batch as usize, 1);
+                let last = tokens.len() - 1;
+                for (i, t) in tokens.iter().enumerate() {
+                    batch.add(*t, i as i32, &[0], i == last).map_err(|e| e.to_string())?;
+                }
+                ctx.decode(&mut batch).map_err(|e| format!("decode: {e}"))?;
+                Ok((ctx, batch))
+            });
+            match decoded {
+                Ok(pair) => break pair,
+                Err(e) if attempt == 0 && ctx_size > needed => {
+                    // Allocation failures show up as decode errors; shrink and retry.
+                    attempt += 1;
+                    ctx_size = needed;
+                    let _ = e;
+                }
+                Err(e) if e.contains("-3") || e.contains("alloc") || e.contains("memory") => {
+                    return Err(format!("Not enough free memory to run {} right now. Close other heavy apps, or pick a smaller model tier in Settings. ({e})", self.name));
+                }
+                Err(e) => return Err(e),
+            }
+        };
 
         let mut sampler = LlamaSampler::chain_simple([
             LlamaSampler::penalties(self.model.n_vocab(), 64, 1.08, 0.0, 0.0),

@@ -134,6 +134,9 @@ fn local_model_pipeline_lowers_score() {
             if name == "essay" {
                 assert!(text.contains("Everest") && text.contains("Nepal"), "lost a fact");
             }
+            // The model must actually run; a silent fallback to rules is a failure here.
+            assert!(!out.warnings.iter().any(|w| w.contains("model error")), "[{}/{name}] model error: {:?}", spec.tier, out.warnings);
+            assert!(out.engine.starts_with("local-ai"), "engine was {}", out.engine);
             assert!(after <= before - min_drop, "[{}/{name}] expected a drop of {min_drop}+: {before} -> {after}", spec.tier);
 
             // Feeding the result back in (what a user does when clicking again)
