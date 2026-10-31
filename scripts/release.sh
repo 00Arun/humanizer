@@ -34,7 +34,8 @@ rm -f src-tauri/target/release/bundle/dmg/Humanizer_*.dmg
 npm run tauri build -- --bundles dmg
 DMG=$(ls src-tauri/target/release/bundle/dmg/Humanizer_"$VERSION"_*.dmg)
 # The engine must be inside: llama.cpp leaves its Metal kernels in the binary.
-if ! strings src-tauri/target/release/humanizer | grep -q "kernel void kernel_"; then
+# (grep -c, not -q: -q closes the pipe early and pipefail would flag a pass as a failure)
+if [[ "$(strings src-tauri/target/release/humanizer | grep -cE "llama_model_load|ggml_metal")" -eq 0 ]]; then
   echo "Built binary does not contain the offline AI engine. Aborting." >&2
   exit 1
 fi

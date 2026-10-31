@@ -28,18 +28,34 @@ if [[ ! -f "$STAGE" ]]; then
   fi
 fi
 
-echo "==> Building full DMG (app + model)"
-rm -f src-tauri/target/release/bundle/dmg/Humanizer_*.dmg
-npm run tauri build -- --bundles dmg --config src-tauri/tauri.full.conf.json
+echo "==> Building app bundle with the model inside"
+rm -rf src-tauri/target/release/bundle/macos/Humanizer.app
+npm run tauri build -- --bundles app --config src-tauri/tauri.full.conf.json
 
-if ! strings src-tauri/target/release/humanizer | grep -q "kernel void kernel_"; then
+APP="src-tauri/target/release/bundle/macos/Humanizer.app"
+# (grep -c, not -q: -q closes the pipe early and pipefail would flag a pass as a failure)
+if [[ "$(strings "$APP/Contents/MacOS/humanizer" | grep -cE "llama_model_load|ggml_metal")" -eq 0 ]]; then
   echo "Built binary does not contain the offline AI engine. Aborting." >&2
   exit 1
 fi
+if [[ ! -f "$APP/Contents/Resources/models/$MODEL_FILE" ]]; then
+  echo "Model was not bundled into the app resources. Aborting." >&2
+  exit 1
+fi
 
+# Tauri's create-dmg step unmounts a staging image that Spotlight is still
+# indexing and fails with "Resource busy" on multi-GB images, so build the
+# DMG directly: app + Applications shortcut, compressed.
+echo "==> Creating DMG (this compresses ~7.5 GB; several minutes)"
 OUT="releases-full/Humanizer_${VERSION}_aarch64_full.dmg"
-mv src-tauri/target/release/bundle/dmg/Humanizer_"$VERSION"_aarch64.dmg "$OUT"
+STAGING="$(mktemp -d)/Humanizer"
+mkdir -p "$STAGING"
+cp -R "$APP" "$STAGING/"
+ln -s /Applications "$STAGING/Applications"
+rm -f "$OUT"
+hdiutil create -volname "Humanizer" -srcfolder "$STAGING" -ov -format UDZO -imagekey zlib-level=6 "$OUT"
+rm -rf "$(dirname "$STAGING")"
 ls -lh "$OUT"
 echo
 echo "Done: $ROOT/$OUT"
-echo "Host this file yourself (website / Drive); it is too large for GitHub."
+echo "Publish it with ./scripts/publish-full.sh (Hugging Face); it is too large for GitHub."
