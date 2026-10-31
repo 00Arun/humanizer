@@ -39,27 +39,48 @@ pub struct ModelSpec {
     pub no_think: bool,
 }
 
-/// Best first. Auto mode picks the strongest tier the machine's RAM allows.
+/// Strongest first. Auto mode picks the strongest tier the machine's RAM
+/// allows. Sizes are the GGUF files on Hugging Face (public, ungated).
 pub const CATALOG: &[ModelSpec] = &[
     ModelSpec {
+        tier: "max",
+        label: "Gemma 4 31B (maximum quality)",
+        file: "gemma-4-31B-it-Q4_K_M.gguf",
+        url: "https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/resolve/main/gemma-4-31B-it-Q4_K_M.gguf",
+        size_bytes: 18_320_000_000,
+        min_ram_gb: 32,
+        notes: "Google's largest Gemma 4. Needs a 32 GB machine; slow on CPU-only PCs.",
+        no_think: false,
+    },
+    ModelSpec {
+        tier: "large",
+        label: "Gemma 4 26B-A4B (large, fast)",
+        file: "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+        url: "https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+        size_bytes: 16_950_000_000,
+        min_ram_gb: 32,
+        notes: "Mixture-of-experts: 26B knowledge, 4B active, so it runs as fast as a small model. Needs 32 GB RAM for the file.",
+        no_think: false,
+    },
+    ModelSpec {
         tier: "best",
-        label: "Gemma 3 12B (best quality)",
-        file: "gemma-3-12b-it-qat-Q4_K_M.gguf",
-        url: "https://huggingface.co/unsloth/gemma-3-12b-it-qat-GGUF/resolve/main/gemma-3-12b-it-qat-Q4_K_M.gguf",
-        size_bytes: 7_300_000_000,
+        label: "Gemma 4 12B (best for 16 GB)",
+        file: "gemma-4-12b-it-Q4_K_M.gguf",
+        url: "https://huggingface.co/unsloth/gemma-4-12b-it-GGUF/resolve/main/gemma-4-12b-it-Q4_K_M.gguf",
+        size_bytes: 7_120_000_000,
         min_ram_gb: 16,
-        notes: "Most natural prose of the three. Needs 16 GB RAM; ~15 tokens/s on Apple Silicon, slow on CPU-only PCs.",
+        notes: "Recommended on 16 GB machines. ~15 tokens/s on Apple Silicon.",
         no_think: false,
     },
     ModelSpec {
         tier: "balanced",
-        label: "Qwen3 8B (balanced)",
-        file: "Qwen3-8B-Q4_K_M.gguf",
-        url: "https://huggingface.co/unsloth/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf",
-        size_bytes: 5_030_000_000,
+        label: "Gemma 4 E4B (balanced)",
+        file: "gemma-4-E4B_q4_0-it.gguf",
+        url: "https://huggingface.co/google/gemma-4-E4B-it-qat-q4_0-gguf/resolve/main/gemma-4-E4B_q4_0-it.gguf",
+        size_bytes: 5_150_000_000,
         min_ram_gb: 12,
-        notes: "Good rewrites at half the size. Needs 12 GB RAM.",
-        no_think: true,
+        notes: "Google's quantisation-aware 4B-effective model. Good quality at half the size.",
+        no_think: false,
     },
     ModelSpec {
         tier: "light",
@@ -68,10 +89,26 @@ pub const CATALOG: &[ModelSpec] = &[
         url: "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
         size_bytes: 2_497_281_120,
         min_ram_gb: 8,
-        notes: "Runs on 8 GB machines and older laptops. Plainer output.",
+        notes: "Runs on 8 GB machines and older laptops. Plainer output, very fast.",
+        no_think: false,
+    },
+    ModelSpec {
+        tier: "classic",
+        label: "Gemma 3 12B (previous generation)",
+        file: "gemma-3-12b-it-qat-Q4_K_M.gguf",
+        url: "https://huggingface.co/unsloth/gemma-3-12b-it-qat-GGUF/resolve/main/gemma-3-12b-it-qat-Q4_K_M.gguf",
+        size_bytes: 7_300_000_000,
+        min_ram_gb: 16,
+        notes: "Kept for people who already downloaded it. Gemma 4 12B is the better pick at the same size.",
         no_think: false,
     },
 ];
+
+/// Tiers offered for download in the UI (everything except the legacy one,
+/// which only shows when it is already on disk).
+pub fn is_legacy(tier: &str) -> bool {
+    tier == "classic"
+}
 
 /// The light tier; also the file the test-suite and scripts refer to.
 pub const DEFAULT_MODEL_FILE: &str = "Qwen3-4B-Instruct-2507-Q4_K_M.gguf";
@@ -87,7 +124,12 @@ pub fn spec_for_file(path: &Path) -> Option<&'static ModelSpec> {
 
 /// Strongest tier the machine can hold.
 pub fn recommended_tier(total_ram_gb: u32) -> &'static str {
-    CATALOG.iter().find(|m| total_ram_gb >= m.min_ram_gb).map(|m| m.tier).unwrap_or("light")
+    // On 32 GB machines prefer the fast MoE over the dense 31B: near-equal
+    // quality for rewriting at several times the speed.
+    if total_ram_gb >= 32 {
+        return "large";
+    }
+    CATALOG.iter().filter(|m| !is_legacy(m.tier)).find(|m| total_ram_gb >= m.min_ram_gb).map(|m| m.tier).unwrap_or("light")
 }
 
 pub fn total_ram_gb() -> u32 {

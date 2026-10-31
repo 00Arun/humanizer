@@ -245,6 +245,14 @@
               <button class="btn ghost" id="btn-model-test" hidden>Test model</button>
               <button class="btn ghost" id="btn-model-custom">Use my own .gguf…</button>
             </div>
+            <div class="field" style="margin-top:14px; margin-bottom:0">
+              <label for="model-url">Add any other model from a link</label>
+              <div class="row">
+                <input id="model-url" type="text" placeholder="https://huggingface.co/…/resolve/main/model-Q4_K_M.gguf" spellcheck="false" />
+                <button class="btn ghost" id="btn-model-url">Download &amp; use</button>
+              </div>
+              <div class="hint">Any instruct model in GGUF format works (Gemma, Qwen, Llama, Mistral…). Paste the file's direct “resolve/main” link from Hugging Face. Bigger models need more RAM: roughly the file size plus 2 GB.</div>
+            </div>
             <div class="hint" id="model-test-result" style="margin-top:8px"></div>
           </div>
 

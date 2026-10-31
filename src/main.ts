@@ -294,6 +294,23 @@ $("btn-model-custom").addEventListener("click", async () => {
   }
   refreshModelStatus();
 });
+$("btn-model-url").addEventListener("click", async () => {
+  const url = $<HTMLInputElement>("model-url").value.trim();
+  if (!url) return toast("Paste a .gguf link first.", "err");
+  try {
+    const name = await invoke<string>("download_custom_model", { url });
+    settings.local_model_path = "";
+    toast(`Downloading ${name}… it becomes the active model when done.`, "", 6000);
+    $<HTMLInputElement>("model-url").value = "";
+    $("model-progress").hidden = false;
+    $("model-progress-fill").classList.add("indeterminate");
+    $("model-progress-label").textContent = `Starting ${name}…`;
+    await refreshModelStatus();
+  } catch (e) {
+    toast(errMsg(e), "err", 8000);
+  }
+});
+
 $("btn-model-test").addEventListener("click", async () => {
   const out = $("model-test-result");
   out.className = "hint";

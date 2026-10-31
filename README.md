@@ -93,9 +93,14 @@ Humanizer ships small and fetches its language model on first launch (no click n
 
 | Tier | Model | Size | RAM |
 |---|---|---|---|
-| best | Gemma 3 12B (QAT, Q4_K_M) | 7.3 GB | 16 GB |
-| balanced | Qwen3 8B (Q4_K_M, thinking off) | 5.0 GB | 12 GB |
+| max | Gemma 4 31B (Q4_K_M) | 18.3 GB | 32 GB |
+| large | Gemma 4 26B-A4B MoE (UD-Q4_K_M) — recommended on 32 GB machines, fast | 17.0 GB | 32 GB |
+| best | Gemma 4 12B (Q4_K_M) — recommended on 16 GB machines | 7.1 GB | 16 GB |
+| balanced | Gemma 4 E4B (Google QAT q4_0) | 5.2 GB | 12 GB |
 | light | Qwen3 4B Instruct 2507 (Q4_K_M) | 2.5 GB | 8 GB |
+| classic | Gemma 3 12B (QAT Q4_K_M) — shown only if already downloaded | 7.3 GB | 16 GB |
+
+Any other instruct model in GGUF format can be added from Settings with its Hugging Face "resolve/main" link (*Add any other model from a link*) or picked from disk (*Use my own .gguf…*). Architectures must be supported by the bundled llama.cpp (Gemma 2/3/4, Qwen 2/3/3.5, Llama, Mistral, GLM 4/5-next, Nemotron and most others; Qwen 3.8 is not yet).
 
 Files live in the app data folder (`~/Library/Application Support/com.arunaistudio.humanizer/models/` on macOS, `%APPDATA%\com.arunaistudio.humanizer\models\` on Windows); downloads resume if interrupted. Any other `.gguf` instruct model works via *Use my own .gguf…*. Every local rewrite is gated by the detector suite: 1–3 candidates are drawn (Light/Balanced/Strong), the most human-scoring one wins, and the original is kept if none beats it.
 

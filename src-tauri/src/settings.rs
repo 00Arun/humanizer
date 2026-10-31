@@ -93,7 +93,7 @@ impl Settings {
             self.engine_mode = "auto".to_string();
         }
         self.local_model_path = self.local_model_path.trim().to_string();
-        if !["auto", "best", "balanced", "light"].contains(&self.local_model_tier.as_str()) {
+        if !["auto", "max", "large", "best", "balanced", "light", "classic"].contains(&self.local_model_tier.as_str()) {
             self.local_model_tier = "auto".to_string();
         }
     }

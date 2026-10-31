@@ -340,6 +340,7 @@ pub async fn local_model_status(app: AppHandle, state: State<'_, AppState>) -> R
     };
     let tiers = local_llm::CATALOG
         .iter()
+        .filter(|m| !local_llm::is_legacy(m.tier) || download_target(&app, m.tier).is_file())
         .map(|m| {
             let p = download_target(&app, m.tier);
             local_llm::TierStatus {
@@ -575,4 +576,38 @@ pub async fn chat_send(app: AppHandle, state: State<'_, AppState>, id: String, t
         }
         Engine::Rules => Err("Chat needs an AI engine: wait for the offline model to finish downloading, or add an API key in Settings.".into()),
     }
+}
+
+/// Downloads any GGUF the user points at (e.g. a newer model from Hugging
+/// Face) into the models folder and switches the engine to it.
+#[tauri::command]
+pub async fn download_custom_model(app: AppHandle, state: State<'_, AppState>, url: String) -> Result<String, String> {
+    let url = url.trim().to_string();
+    let name = url.split('?').next().unwrap_or("").rsplit('/').next().unwrap_or("").to_string();
+    if !url.starts_with("https://") || !name.to_lowercase().ends_with(".gguf") {
+        return Err("Paste a direct https link to a .gguf file (for Hugging Face use the “resolve/main/…gguf” link).".into());
+    }
+    let dest = models_dir(&app).join(&name);
+    if dest.is_file() {
+        return Err(format!("{name} is already downloaded; select it with “Use my own .gguf…”."));
+    }
+    // Point the engine at this file once it arrives.
+    let mut s = settings_of(&state);
+    s.local_model_path = dest.to_string_lossy().to_string();
+    s.save(&app)?;
+    *state.settings.lock().unwrap() = s;
+    *state.local_llm.lock().await = None;
+
+    let http = state.http.clone();
+    let dl = state.downloader.clone();
+    let app2 = app.clone();
+    let label = name.clone();
+    tauri::async_runtime::spawn(async move {
+        let emitter = app2.clone();
+        let _ = local_llm::download(http, &label, &url, &dest, dl, move |p: DownloadProgress| {
+            let _ = emitter.emit("model-download", p);
+        })
+        .await;
+    });
+    Ok(name)
 }
