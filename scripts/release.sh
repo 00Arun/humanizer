@@ -29,12 +29,20 @@ sed -i '' "0,/^version = \"[0-9.]*\"/s//version = \"$VERSION\"/" src-tauri/Cargo
 (cd src-tauri && cargo generate-lockfile --offline >/dev/null 2>&1 || cargo update -p humanizer --offline >/dev/null 2>&1 || true)
 
 echo "==> Building macOS installer"
+# Remove the previous DMG first so a failed build can never ship a stale file.
+rm -f src-tauri/target/release/bundle/dmg/Humanizer_*.dmg
 npm run tauri build -- --bundles dmg
+DMG=$(ls src-tauri/target/release/bundle/dmg/Humanizer_"$VERSION"_*.dmg)
+# The engine must be inside: llama.cpp leaves its Metal kernels in the binary.
+if ! strings src-tauri/target/release/humanizer | grep -q "kernel void kernel_"; then
+  echo "Built binary does not contain the offline AI engine. Aborting." >&2
+  exit 1
+fi
 
 echo "==> Updating releases/"
 mkdir -p releases
 rm -f releases/Humanizer_*_aarch64.dmg releases/Humanizer_*_x64.dmg
-cp src-tauri/target/release/bundle/dmg/Humanizer_"$VERSION"_*.dmg releases/
+cp "$DMG" releases/
 cat > releases/VERSION <<EOF
 $VERSION
 EOF
